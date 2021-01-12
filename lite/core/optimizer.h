@@ -79,30 +79,33 @@ class Optimizer {
     InitTargetTypeTransformPass();
     InitControlFlowOpUnusedInputsAndOutputsEliminatePass();
 
-    if (passes.empty() || passes.size() == 1) {
-      std::vector<std::string> passes_local{{
-          "lite_quant_dequant_fuse_pass",         //
-          "weight_quantization_preprocess_pass",  //
-          "lite_conv_elementwise_fuse_pass",      // conv-elemwise-bn
-          "lite_conv_bn_fuse_pass",               //
-          "lite_conv_elementwise_fuse_pass",      // conv-bn-elemwise
-          "lite_conv_conv_fuse_pass",
-          // TODO(Superjomn) Refine the fusion related design to select fusion
-          // kernels for devices automatically.
-          "lite_conv_activation_fuse_pass",              //
-          "lite_var_conv_2d_activation_fuse_pass",       //
-          "lite_match_matrix_activation_fuse_pass",      //
-          "lite_fc_fuse_pass",                           //
-          "lite_shuffle_channel_fuse_pass",              //
-          "lite_transpose_softmax_transpose_fuse_pass",  //
-          "lite_interpolate_fuse_pass",                  //
-          "identity_scale_eliminate_pass",               //
-          "lite_scales_fuse_pass",                       //
-          "lite_sequence_reverse_embedding_fuse_pass",   //
-          "elementwise_mul_constant_eliminate_pass",     //
-          "lite_sequence_pool_concat_fuse_pass",         //
-          "lite_scale_activation_fuse_pass",             //
-
+    std::vector<std::string> passes_local{
+        {"lite_quant_dequant_fuse_pass",             //
+         "weight_quantization_preprocess_pass",      //
+         "adaptive_1x1_pool2d_convert_global_pass",  //
+         "lite_conv_elementwise_fuse_pass",          // conv-elemwise-bn
+         "lite_conv_bn_fuse_pass",                   //
+         "lite_conv_elementwise_fuse_pass",          // conv-bn-elemwise
+         "lite_conv_conv_fuse_pass",                 //
+         // TODO(Superjomn) Refine the fusion related design to select fusion
+         // kernels for devices automatically.
+         "lite_conv_activation_fuse_pass",              //
+         "lite_var_conv_2d_activation_fuse_pass",       //
+         "lite_match_matrix_activation_fuse_pass",      //
+         "lite_squeeze2_matmul_fuse_pass",              //
+         "lite_reshape2_matmul_fuse_pass",              //
+         "lite_matmul_fuse_pass",                       //
+         "lite_fc_fuse_pass",                           //
+         "lite_shuffle_channel_fuse_pass",              //
+         "lite_transpose_softmax_transpose_fuse_pass",  //
+         "lite_interpolate_fuse_pass",                  //
+         "identity_scale_eliminate_pass",               //
+         "lite_scales_fuse_pass",                       //
+         "lite_sequence_reverse_embedding_fuse_pass",   //
+         "elementwise_mul_constant_eliminate_pass",     //
+         "lite_sequence_pool_concat_fuse_pass",         //
+         "lite_scale_activation_fuse_pass",             //
+         "lite_instance_norm_activation_fuse_pass",     //
 #if (defined LITE_WITH_LIGHT_WEIGHT_FRAMEWORK) || (defined LITE_WITH_CUDA) || \
     (defined LITE_WITH_ARM)
           "lite_elementwise_activation_fuse_pass",  //
