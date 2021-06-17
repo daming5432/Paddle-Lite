@@ -14,16 +14,21 @@
 
 #pragma once
 
-#include <cstdarg>
 #include <string>
 #include <vector>
+
 #include "lite/api/paddle_api.h"
+#include "lite/core/target_wrapper.h"
 #include "lite/core/tensor.h"
 #include "lite/utils/cp_logging.h"
+#include "lite/utils/macros.h"
+
+#ifdef LITE_WITH_METAL
+#include "lite/backends/metal/target_wrapper.h"
+#endif
 #ifdef LITE_WITH_MLU
 #include "lite/backends/mlu/mlu_utils.h"
 #endif
-#include "lite/utils/macros.h"
 
 namespace paddle {
 namespace lite {
@@ -33,6 +38,7 @@ using L3CacheSetMethod = lite_api::L3CacheSetMethod;
 
 typedef enum {
   kAPPLE = 0,
+  kA35 = 35,
   kA53 = 53,
   kA55 = 55,
   kA57 = 57,
@@ -84,6 +90,8 @@ class DeviceInfo {
     workspace_.mutable_data<int8_t>();
   }
 
+  void ClearArmL3Cache() { workspace_.clear(); }
+
   int llc_size() const {
     auto size = absolute_l3cache_size_;
     switch (l3_cache_method_) {
@@ -106,7 +114,13 @@ class DeviceInfo {
     return size > 0 ? size : 512 * 1024;
   }
 
-  bool has_dot() const { return dot_[active_ids_[0]]; }
+  inline bool has_dot() const {
+#ifdef WITH_ARM_DOTPROD
+    return dot_[active_ids_[0]];
+#else
+    return false;
+#endif
+  }
   bool has_fp16() const { return fp16_[active_ids_[0]]; }
 
   template <typename T>

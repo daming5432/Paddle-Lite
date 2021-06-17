@@ -12,105 +12,128 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-if(NOT LITE_WITH_XPU)
-  return()
-endif()
+if (NOT LITE_WITH_XPU)
+  return ()
+endif ()
 
-if(NOT DEFINED XPU_SDK_ROOT)
-  set(XPU_SDK_ROOT $ENV{XPU_SDK_ROOT})
-  if(NOT XPU_SDK_ROOT)
-    message(FATAL_ERROR "Must set XPU_SDK_ROOT or env XPU_SDK_ROOT when LITE_WITH_XPU=ON")
-  endif()
-endif()
-message(STATUS "XPU_SDK_ROOT: ${XPU_SDK_ROOT}")
+set (XPU_SOURCE_DIR ${THIRD_PARTY_PATH}/xpu)
+set (XPU_DOWNLOAD_DIR ${XPU_SOURCE_DIR}/download)
+set (XPU_INSTALL_DIR ${THIRD_PARTY_PATH}/install)
 
-include_directories("${XPU_SDK_ROOT}/XTDK/include")
+if (NOT XPU_SDK_ROOT)
+  INCLUDE (ExternalProject)
 
-find_library(XPU_SDK_XPU_API_FILE NAMES xpuapi
-  PATHS ${XPU_SDK_ROOT}/XTDK/shlib
-  NO_DEFAULT_PATH)
+  if (NOT XPU_SDK_URL)
+    set (XPU_SDK_URL "https://baidu-kunlun-product.cdn.bcebos.com/KL-SDK/klsdk-dev_paddle")
+  endif ()
 
-if(NOT XPU_SDK_XPU_API_FILE)
-  message(FATAL_ERROR "Can not find XPU API Library in ${XPU_SDK_ROOT}")
-else()
-  message(STATUS "Found XPU API Library: ${XPU_SDK_XPU_API_FILE}")
-  add_library(xpu_sdk_xpu_api SHARED IMPORTED GLOBAL)
-  set_property(TARGET xpu_sdk_xpu_api PROPERTY IMPORTED_LOCATION ${XPU_SDK_XPU_API_FILE})
-endif()
+  if (NOT XPU_SDK_ENV)
+    if (LITE_WITH_X86)
+      set (XPU_SDK_ENV "bdcentos_x86_64")
+    elseif (LITE_WITH_ARM)
+      set (XPU_SDK_ENV "kylin_aarch64")
+    else ()
+      message (FATAL_ERROR "xpu doesn't supported the host env")
+    endif ()
+  endif ()
 
-find_library(XPU_SDK_XPU_RT_FILE NAMES xpurt
-  PATHS ${XPU_SDK_ROOT}/XTDK/runtime/shlib ${XPU_SDK_ROOT}/XTDK/shlib # libxpurt.so may have been moved to XTDK/runtime/shlib
-  NO_DEFAULT_PATH)
+  # get xre from XPU_XRE_URL
+  set (XPU_XRE_URL "${XPU_SDK_URL}/xre-${XPU_SDK_ENV}.tar.gz")
+  message (STATUS "XPU_XRE_URL: ${XPU_XRE_URL}")
 
-if(NOT XPU_SDK_XPU_RT_FILE)
-  message(FATAL_ERROR "Can not find XPU RT Library in ${XPU_SDK_ROOT}")
-else()
-  message(STATUS "Found XPU RT Library: ${XPU_SDK_XPU_RT_FILE}")
-  add_library(xpu_sdk_xpu_rt SHARED IMPORTED GLOBAL)
-  set_property(TARGET xpu_sdk_xpu_rt PROPERTY IMPORTED_LOCATION ${XPU_SDK_XPU_RT_FILE})
-endif()
+  ExternalProject_Add (
+    extern_xpu_xre
+    ${EXTERNAL_PROJECT_LOG_ARGS}
+    DOWNLOAD_DIR            ${XPU_DOWNLOAD_DIR}
+    DOWNLOAD_COMMAND        wget --no-check-certificate -c -q ${XPU_XRE_URL} && tar xf xre-${XPU_SDK_ENV}.tar.gz
+    CONFIGURE_COMMAND       ""
+    BUILD_COMMAND           ""
+    UPDATE_COMMAND          ""
+    INSTALL_COMMAND         ${CMAKE_COMMAND} -E copy_directory ${XPU_DOWNLOAD_DIR}/xre-${XPU_SDK_ENV} ${XPU_INSTALL_DIR}/xpu/xre
+  )
 
-set(xpu_runtime_libs xpu_sdk_xpu_api xpu_sdk_xpu_rt CACHE INTERNAL "xpu runtime libs")
-set(xpu_builder_libs xpu_sdk_xpu_api xpu_sdk_xpu_rt CACHE INTERNAL "xpu builder libs")
+  set (XPU_XRE_ROOT            "${XPU_INSTALL_DIR}/xpu/xre"  CACHE PATH "xpu xre include directory" FORCE)
+  set (XPU_XRE_INCLUDE_DIR     "${XPU_XRE_ROOT}/include" CACHE PATH "xpu xre include directory" FORCE)
+  set (XPURT_LIB               "${XPU_XRE_ROOT}/so/libxpurt.so" CACHE FILEPATH "libxpurt.so" FORCE)
 
-if(LITE_WITH_XTCL)
-    find_path(XPU_SDK_INC NAMES xtcl.h
-      PATHS ${XPU_SDK_ROOT}/XTCL/include/xtcl NO_DEFAULT_PATH)
-    if(NOT XPU_SDK_INC)
-      message(FATAL_ERROR "Can not find xtcl.h in ${XPU_SDK_ROOT}/include")
-    endif()
-    include_directories("${XPU_SDK_ROOT}/XTCL/include")
+  include_directories (${XPU_XRE_INCLUDE_DIR})
 
-    find_library(XPU_SDK_XTCL_FILE NAMES xtcl
-      PATHS ${XPU_SDK_ROOT}/XTCL/lib
-      NO_DEFAULT_PATH)
+  add_library (xpurt SHARED IMPORTED GLOBAL)
+  set_property (TARGET xpurt PROPERTY IMPORTED_LOCATION ${XPURT_LIB})
+  add_dependencies (xpurt extern_xpu_xre)
 
-    if(NOT XPU_SDK_XTCL_FILE)
-      message(FATAL_ERROR "Can not find XPU XTCL Library in ${XPU_SDK_ROOT}")
-    else()
-      message(STATUS "Found XPU XTCL Library: ${XPU_SDK_XTCL_FILE}")
-      add_library(xpu_sdk_xtcl SHARED IMPORTED GLOBAL)
-      set_property(TARGET xpu_sdk_xtcl PROPERTY IMPORTED_LOCATION ${XPU_SDK_XTCL_FILE})
-    endif()
+  set (xpu_runtime_libs xpurt CACHE INTERNAL "xpu runtime libs")
 
-    find_library(XPU_SDK_TVM_FILE NAMES tvm
-      PATHS ${XPU_SDK_ROOT}/XTCL/shlib
-      NO_DEFAULT_PATH)
+  # get xdnn from XPU_XDNN_URL
+  set (XPU_XDNN_URL "${XPU_SDK_URL}/xdnn-${XPU_SDK_ENV}.tar.gz")
+  message (STATUS "XPU_XDNN_URL: ${XPU_XDNN_URL}")
 
-    if(NOT XPU_SDK_TVM_FILE)
-      message(FATAL_ERROR "Can not find XPU TVM Library in ${XPU_SDK_ROOT}")
-    else()
-      message(STATUS "Found XPU TVM Library: ${XPU_SDK_TVM_FILE}")
-      add_library(xpu_sdk_tvm SHARED IMPORTED GLOBAL)
-      set_property(TARGET xpu_sdk_tvm PROPERTY IMPORTED_LOCATION ${XPU_SDK_TVM_FILE})
-    endif()
+  ExternalProject_Add (
+    extern_xpu_xdnn
+    ${EXTERNAL_PROJECT_LOG_ARGS}
+    DOWNLOAD_DIR            ${XPU_DOWNLOAD_DIR}
+    DOWNLOAD_COMMAND        wget --no-check-certificate -c -q ${XPU_XDNN_URL} && tar xf xdnn-${XPU_SDK_ENV}.tar.gz
+    CONFIGURE_COMMAND       ""
+    BUILD_COMMAND           ""
+    UPDATE_COMMAND          ""
+    INSTALL_COMMAND         ${CMAKE_COMMAND} -E copy_directory ${XPU_DOWNLOAD_DIR}/xdnn-${XPU_SDK_ENV} ${XPU_INSTALL_DIR}/xpu/xdnn
+  )
 
-    find_library(XPU_SDK_LLVM_FILE NAMES LLVM-8
-      PATHS ${XPU_SDK_ROOT}/XTDK/shlib
-      NO_DEFAULT_PATH)
+  set (XPU_XDNN_ROOT           "${XPU_INSTALL_DIR}/xpu/xdnn" CACHE PATH "xpu xdnn root" FORCE)
+  set (XPU_XDNN_INCLUDE_DIR    "${XPU_XDNN_ROOT}/include" CACHE PATH "xpu xdnn include directory" FORCE)
+  set (XPUAPI_LIB              "${XPU_XDNN_ROOT}/so/libxpuapi.so" CACHE FILEPATH "libxpuapi.so" FORCE)
 
-    if(NOT XPU_SDK_LLVM_FILE)
-      message(FATAL_ERROR "Can not find LLVM Library in ${XPU_SDK_ROOT}")
-    else()
-      message(STATUS "Found XPU LLVM Library: ${XPU_SDK_LLVM_FILE}")
-      add_library(xpu_sdk_llvm SHARED IMPORTED GLOBAL)
-      set_property(TARGET xpu_sdk_llvm PROPERTY IMPORTED_LOCATION ${XPU_SDK_LLVM_FILE})
-    endif()
+  include_directories (${XPU_XDNN_INCLUDE_DIR})
 
-    find_library(XPU_SDK_XPU_JITC_FILE NAMES xpujitc
-      PATHS ${XPU_SDK_ROOT}/XTDK/runtime/shlib ${XPU_SDK_ROOT}/XTDK/shlib # libxpujitc.so may have been moved to XTDK/runtime/shlib
-      NO_DEFAULT_PATH)
+  add_library (xpuapi SHARED IMPORTED GLOBAL)
+  set_property (TARGET xpuapi PROPERTY IMPORTED_LOCATION ${XPUAPI_LIB})
+  add_dependencies (xpuapi extern_xpu_xdnn extern_xpu_xre)
 
-    if(NOT XPU_SDK_XPU_JITC_FILE)
-      message(FATAL_ERROR "Can not find XPU JITC Library in ${XPU_SDK_ROOT}")
-    else()
-      message(STATUS "Found XPU JITC Library: ${XPU_SDK_XPU_JITC_FILE}")
-      add_library(xpu_sdk_xpu_jitc SHARED IMPORTED GLOBAL)
-      set_property(TARGET xpu_sdk_xpu_jitc PROPERTY IMPORTED_LOCATION ${XPU_SDK_XPU_JITC_FILE})
-    endif()
+  set (xpu_builder_libs xpuapi CACHE INTERNAL "xpu builder libs")
 
-    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -DDMLC_USE_GLOG=1")
+  return ()
+endif ()
 
-    set(xpu_runtime_libs xpu_sdk_xtcl xpu_sdk_tvm xpu_sdk_xpu_api xpu_sdk_xpu_rt xpu_sdk_llvm xpu_sdk_xpu_jitc CACHE INTERNAL "xpu runtime libs")
-    set(xpu_builder_libs xpu_sdk_xtcl xpu_sdk_tvm xpu_sdk_xpu_api xpu_sdk_xpu_rt xpu_sdk_llvm xpu_sdk_xpu_jitc CACHE INTERNAL "xpu builder libs")
-endif()
+message (STATUS "XPU_SDK_ROOT: ${XPU_SDK_ROOT}")
+
+set (XPU_XTDK_INCLUDE_DIR    "${XPU_SDK_ROOT}/XTDK/include" CACHE PATH "xpu xtdk include directory" FORCE)
+set (XPUAPI_LIB              "${XPU_SDK_ROOT}/XTDK/shlib/libxpuapi.so" CACHE FILEPATH "libxpuapi.so" FORCE)
+set (XPURT_LIB               "${XPU_SDK_ROOT}/XTDK/runtime/shlib/libxpurt.so" CACHE FILEPATH "libxpurt.so" FORCE)
+
+include_directories (${XPU_XTDK_INCLUDE_DIR})
+
+add_library (xpuapi SHARED IMPORTED GLOBAL)
+set_property (TARGET xpuapi PROPERTY IMPORTED_LOCATION ${XPUAPI_LIB})
+
+add_library (xpurt SHARED IMPORTED GLOBAL)
+set_property (TARGET xpurt PROPERTY IMPORTED_LOCATION ${XPURT_LIB})
+
+set (xpu_runtime_libs xpuapi xpurt CACHE INTERNAL "xpu runtime libs")
+set (xpu_builder_libs xpuapi xpurt CACHE INTERNAL "xpu builder libs")
+
+if (LITE_WITH_XTCL)
+    set (XPU_XTCL_INCLUDE_DIR  "${XPU_SDK_ROOT}/XTCL/include" CACHE PATH "xpu xtcl include directory" FORCE)
+    set (XTCL_LIB              "${XPU_SDK_ROOT}/XTCL/lib/libxtcl.a" CACHE FILEPATH "libxtcl.a" FORCE)
+    set (TVM_LIB               "${XPU_SDK_ROOT}/XTCL/shlib/libtvm.so" CACHE FILEPATH "libtvm.so" FORCE)
+    set (LLVM_10_LIB           "${XPU_SDK_ROOT}/XTCL/shlib/libLLVM-10.so" CACHE FILEPATH "libLLVM-10.so" FORCE)
+    set (XPUJITC_LIB           "${XPU_SDK_ROOT}/XTCL/shlib/libxpujitc.so" CACHE FILEPATH "libxpujitc.so" FORCE)
+
+    include_directories (${XPU_XTCL_INCLUDE_DIR})
+
+    add_library (xtcl SHARED IMPORTED GLOBAL)
+    set_property (TARGET xtcl PROPERTY IMPORTED_LOCATION ${XTCL_LIB})
+
+    add_library (tvm SHARED IMPORTED GLOBAL)
+    set_property (TARGET tvm PROPERTY IMPORTED_LOCATION ${TVM_LIB})
+
+    add_library (llvm_10 SHARED IMPORTED GLOBAL)
+    set_property (TARGET llvm_10 PROPERTY IMPORTED_LOCATION ${LLVM_10_LIB})
+
+    add_library(xpujitc SHARED IMPORTED GLOBAL)
+    set_property(TARGET xpujitc PROPERTY IMPORTED_LOCATION ${XPUJITC_LIB})
+
+    set (CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -DDMLC_USE_GLOG=1")
+
+    set (xpu_runtime_libs xtcl tvm xpuapi xpurt llvm_10 xpujitc CACHE INTERNAL "xpu runtime libs")
+    set (xpu_builder_libs xtcl tvm xpuapi xpurt llvm_10 xpujitc CACHE INTERNAL "xpu builder libs")
+endif ()

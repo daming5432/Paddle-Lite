@@ -20,6 +20,7 @@
 #include <string>
 #include <utility>
 #include <vector>
+#include "lite/api/paddle_place.h"
 #include "lite/backends/arm/math/type_trans.h"
 #include "lite/core/context.h"
 #include "lite/core/target_wrapper.h"
@@ -56,6 +57,10 @@ class KernelBase {
 
   /// Run the kernel. Before Run, both the param_ and context_ should be valid.
   virtual void Run() = 0;
+
+#ifdef LITE_WITH_METAL
+  virtual void SaveOutput() {}
+#endif
 
 #ifdef LITE_WITH_PROFILE
   void SetProfiler(profile::Profiler* profiler, int id) {
@@ -95,6 +100,9 @@ class KernelBase {
 #if defined(LITE_WITH_CUDA)
     WorkSpace::Global_CUDA().AllocReset();
 #endif
+#if defined(LITE_WITH_METAL)
+    WorkSpace::Global_METAL().AllocReset();
+#endif
 #if defined(LITE_WITH_MLU)
     WorkSpace::Global_MLU().AllocReset();
 #endif
@@ -107,12 +115,9 @@ class KernelBase {
 
     Run();
 
-    if (is_first_epoch_for_profiler_ && (!is_kernel_test_)) {
-      SetProfileRuntimeKernelInfo(profiler_->GetOpCharacter(profile_id_));
-      is_first_epoch_for_profiler_ = false;
-    }
-
+    // skip test
     if (!is_kernel_test_) {
+      SetProfileRuntimeKernelInfo(profiler_->GetOpCharacter(profile_id_));
       profiler_->StopTiming(profile::Type::kDispatch, profile_id_, ctx_.get());
     }
 
@@ -207,11 +212,14 @@ class KernelBase {
 #ifdef LITE_WITH_PROFILE
   profile::Profiler* profiler_{nullptr};
   int profile_id_{-1};
-  bool is_first_epoch_for_profiler_{true};
   bool is_kernel_test_{true};
 #endif
 #ifdef LITE_WITH_OPENCL
   cl::Event event_;
+  cl::Event event_1;
+  cl::Event event_2;
+  bool fp16_support_{paddle::lite::CLRuntime::Global()->get_precision() ==
+                     lite_api::CL_PRECISION_FP16};
 #endif
 };
 

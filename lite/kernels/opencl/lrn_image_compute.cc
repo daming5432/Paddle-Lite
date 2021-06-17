@@ -82,11 +82,11 @@ class LrnImageCompute : public KernelLite<TARGET(kOpenCL),
 #endif
 
     auto out_image_shape = InitImageDimInfoWith(out_dims);
-    auto* x_img = x->data<half_t, cl::Image2D>();
+    auto* x_img = GET_DATA_GPU(x);
     // VLOG(4) << "x_image: " << x_img;
 
-    auto* out_img = out->mutable_data<half_t, cl::Image2D>(
-        out_image_shape["width"], out_image_shape["height"]);
+    auto* out_img = MUTABLE_DATA_GPU(
+        out, out_image_shape["width"], out_image_shape["height"], nullptr);
 
 #ifdef LITE_WITH_LOG
     // VLOG(4) << "out_image" << out_img;
@@ -157,12 +157,12 @@ class LrnImageCompute : public KernelLite<TARGET(kOpenCL),
  protected:
   param_t* lrn_param_{nullptr};
   int n_{5};
-  float alpha_{1e-4};
+  float alpha_{1e-4f};
   float beta_{0.75};
   float k_{1.};
   std::string norm_region_{"AcrossChannels"};
   std::string kernel_func_name_{"lrn"};
-  std::string build_options_{"-DCL_DTYPE_half"};
+  std::string build_options_{""};
   std::string time_stamp_{GetTimeStamp()};
 };
 

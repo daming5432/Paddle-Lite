@@ -25,6 +25,8 @@
 #include "lite/backends/cuda/target_wrapper.h"
 #endif
 #ifdef LITE_WITH_XPU
+#include <functional>
+#include <mutex>  // NOLINT
 #include "lite/backends/xpu/target_wrapper.h"
 #endif
 
@@ -36,10 +38,17 @@
 #include "lite/backends/opencl/cl_runtime.h"
 #endif
 
+#ifdef LITE_WITH_METAL
+#include "lite/backends/metal/target_wrapper.h"
+#endif
+
 namespace paddle {
 namespace lite_api {
 
-bool IsOpenCLBackendValid() {
+bool IsOpenCLBackendValid(bool check_fp16_valid) {
+#ifdef LITE_WITH_LOG
+  LOG(INFO) << "check_fp16_valid:" << check_fp16_valid;
+#endif
   bool opencl_valid = false;
 
 #ifdef LITE_WITH_OPENCL
@@ -54,12 +63,12 @@ bool IsOpenCLBackendValid() {
   LOG(INFO) << "dlsym_success:" << dlsym_success;
 #endif
   if (dlsym_success == false) return false;
-
-  opencl_valid = paddle::lite::CLRuntime::Global()->OpenCLAvaliableForDevice();
-#endif
+  opencl_valid = paddle::lite::CLRuntime::Global()->OpenCLAvaliableForDevice(
+      check_fp16_valid);
 
 #ifdef LITE_WITH_LOG
   LOG(INFO) << "opencl_valid:" << opencl_valid;
+#endif
 #endif
   return opencl_valid;
 }
@@ -106,6 +115,7 @@ template const int64_t *Tensor::data<int64_t>() const;
 template const int32_t *Tensor::data<int32_t>() const;
 template const int16_t *Tensor::data<int16_t>() const;
 template const int8_t *Tensor::data<int8_t>() const;
+template const uint16_t *Tensor::data<uint16_t>() const;
 template const uint8_t *Tensor::data<uint8_t>() const;
 template const bool *Tensor::data<bool>() const;
 template const void *Tensor::data<void>() const;
@@ -116,8 +126,13 @@ template int64_t *Tensor::mutable_data(TargetType type) const;
 template int *Tensor::mutable_data(TargetType type) const;
 template int16_t *Tensor::mutable_data(TargetType type) const;
 template int8_t *Tensor::mutable_data(TargetType type) const;
+template uint16_t *Tensor::mutable_data(TargetType type) const;
 template uint8_t *Tensor::mutable_data(TargetType type) const;
 template bool *Tensor::mutable_data(TargetType type) const;
+#ifdef ENABLE_ARM_FP16
+template const __fp16 *Tensor::data<__fp16>() const;
+template __fp16 *Tensor::mutable_data(TargetType type) const;
+#endif
 
 template <typename T, TargetType type>
 void Tensor::CopyFromCpu(const T *src_data) {
@@ -141,6 +156,13 @@ void Tensor::CopyFromCpu(const T *src_data) {
 #else
     LOG(FATAL) << "Please compile the lib with MLU.";
 #endif
+  } else if (type == TargetType::kMetal) {
+#ifdef LITE_WITH_METAL
+    lite::TargetWrapperMetal::MemcpySync(
+        data, src_data, num * sizeof(T), lite::IoDirection::HtoD);
+#else
+    LOG(FATAL) << "Please compile the lib with METAL.";
+#endif
   } else {
     LOG(FATAL) << "The CopyFromCpu interface just support kHost, kARM, kCUDA";
   }
@@ -149,7 +171,10 @@ template <typename T>
 void Tensor::CopyToCpu(T *data) const {
   const T *src_data = tensor(raw_tensor_)->data<T>();
   int64_t num = tensor(raw_tensor_)->numel();
-  CHECK(num > 0) << "You should call Resize interface first";
+  if (num == 0) {
+    LOG(WARNING) << "Tensor does not hold data.";
+    return;
+  }
   auto type = tensor(raw_tensor_)->target();
   if (type == TargetType::kHost || type == TargetType::kARM) {
     lite::TargetWrapperHost::MemcpySync(
@@ -167,6 +192,13 @@ void Tensor::CopyToCpu(T *data) const {
         data, src_data, num * sizeof(T), lite::IoDirection::DtoH);
 #else
     LOG(FATAL) << "Please compile the lib with MLU.";
+#endif
+  } else if (type == TargetType::kMetal) {
+#ifdef LITE_WITH_METAL
+    lite::TargetWrapperMetal::MemcpySync(
+        data, src_data, num * sizeof(T), lite::IoDirection::HtoD);
+#else
+    LOG(FATAL) << "Please compile the lib with METAL.";
 #endif
   } else {
     LOG(FATAL) << "The CopyToCpu interface just support kHost, kARM, kCUDA";
@@ -196,6 +228,7 @@ template void Tensor::CopyFromCpu<int8_t, TargetType::kMLU>(const int8_t *);
 
 template void Tensor::CopyToCpu(float *) const;
 template void Tensor::CopyToCpu(int *) const;
+template void Tensor::CopyToCpu(int64_t *) const;
 template void Tensor::CopyToCpu(int8_t *) const;
 template void Tensor::CopyToCpu(uint8_t *) const;
 
@@ -262,13 +295,50 @@ ConfigBase::ConfigBase(PowerMode mode, int threads) {
 #endif
 }
 
-void ConfigBase::set_opencl_tune(size_t enable_tune) {
+void ConfigBase::set_opencl_binary_path_name(const std::string &path,
+                                             const std::string &name) {
 #ifdef LITE_WITH_OPENCL
   if (paddle::lite_api::IsOpenCLBackendValid()) {
-    enable_opencl_tune_ = enable_tune;
-    paddle::lite::CLRuntime::Global()->set_auto_tune(enable_opencl_tune_);
+    opencl_bin_path_ = path;
+    opencl_bin_name_ = name;
+    lite::CLRuntime::Global()->SetBinaryPathName(path, name);
+#ifdef LITE_WITH_LOG
+    LOG(INFO) << "opencl binary path and file name:"
+              << (lite::CLRuntime::Global()->GetBinaryPathName())[0] << "/"
+              << (lite::CLRuntime::Global()->GetBinaryPathName())[1];
+#endif
+  }
+#endif
+}
+
+void ConfigBase::set_opencl_tune(CLTuneMode tune_mode,
+                                 const std::string &path,
+                                 const std::string &name,
+                                 size_t lws_repeats) {
 #ifdef LITE_WITH_OPENCL
-    LOG(INFO) << "auto_tune:" << paddle::lite::CLRuntime::Global()->auto_tune();
+  if (paddle::lite_api::IsOpenCLBackendValid()) {
+    opencl_tune_mode_ = tune_mode;
+    paddle::lite::CLRuntime::Global()->set_auto_tune(
+        opencl_tune_mode_, path, name, lws_repeats);
+#ifdef LITE_WITH_LOG
+    LOG(INFO) << "set opencl_tune_mode: "
+              << CLTuneModeToStr(lite::CLRuntime::Global()->auto_tune())
+              << ", lws_repeats:" << lws_repeats;
+    LOG(INFO) << "tuned file path & name:" << path << "/" << name;
+#endif
+  }
+#endif
+}
+
+void ConfigBase::set_opencl_precision(CLPrecisionType p) {
+#ifdef LITE_WITH_OPENCL
+  if (paddle::lite_api::IsOpenCLBackendValid()) {
+    opencl_precision_ = p;
+    paddle::lite::CLRuntime::Global()->set_precision(p);
+#ifdef LITE_WITH_LOG
+    LOG(INFO) << "set opencl precision: "
+              << CLPrecisionTypeToStr(
+                     lite::CLRuntime::Global()->get_precision());
 #endif
   }
 #endif
@@ -290,6 +360,46 @@ void ConfigBase::set_threads(int threads) {
 #endif
 }
 
+void ConfigBase::set_metal_lib_path(const std::string &path) {
+#ifdef LITE_WITH_METAL
+  metal_path_ = path;
+#endif
+  return;
+}
+
+void ConfigBase::set_metal_use_mps(bool flag) {
+#ifdef LITE_WITH_METAL
+  metal_use_mps_ = flag;
+#endif
+  return;
+}
+
+void ConfigBase::set_metal_use_aggressive(bool flag) {
+#ifdef LITE_WITH_METAL
+  metal_use_aggressive_ = flag;
+#endif
+  return;
+}
+
+#ifdef LITE_WITH_X86
+void ConfigBase::set_x86_math_num_threads(int threads) {
+  x86_math_num_threads_ = threads;
+}
+int ConfigBase::x86_math_num_threads() const { return x86_math_num_threads_; }
+#endif
+
+void ConfigBase::set_subgraph_model_cache_buffers(
+    const std::string &key,
+    const std::vector<char> &cfg,
+    const std::vector<char> &bin) {
+  CHECK(!key.empty());
+  CHECK(!cfg.empty());
+  CHECK(!bin.empty());
+  CHECK_EQ(subgraph_model_cache_buffers_.count(key), 0);
+  subgraph_model_cache_buffers_[key] =
+      std::pair<std::vector<char>, std::vector<char>>(cfg, bin);
+}
+
 CxxModelBuffer::CxxModelBuffer(const char *program_buffer,
                                size_t program_buffer_size,
                                const char *params_buffer,
@@ -309,15 +419,9 @@ const std::string &CxxModelBuffer::get_program() const {
   return program_;
 }
 
-const std::string &CxxModelBuffer::get_params() const {
-  CHECK(!params_.empty());
-  return params_;
-}
+const std::string &CxxModelBuffer::get_params() const { return params_; }
 
-bool CxxModelBuffer::is_empty() const {
-  CHECK(program_.empty() == params_.empty());
-  return program_.empty();
-}
+bool CxxModelBuffer::is_empty() const { return program_.empty(); }
 
 const CxxModelBuffer &CxxConfig::get_model_buffer() const {
   CHECK(model_buffer_) << "Cannot get an empty model buffer.";
@@ -350,12 +454,38 @@ CxxConfig::mlu_firstconv_param() const {
 }
 #endif
 
+// **DEPRECATED**, use set_xpu_l3_cache_method() in the future
 void CxxConfig::set_xpu_workspace_l3_size_per_thread(int l3_size) {
 #ifdef LITE_WITH_XPU
-  lite::TargetWrapperXPU::workspace_l3_size_per_thread = l3_size;
+  CxxConfig::set_xpu_l3_cache_method(l3_size, false);
 #else
   LOG(WARNING) << "The invoking of the function "
                   "'set_xpu_workspace_l3_size_per_thread' is ignored, please "
+                  "rebuild it with LITE_WITH_XPU=ON.";
+#endif
+}
+
+void CxxConfig::set_xpu_l3_cache_method(size_t l3_size, bool locked) {
+#ifdef LITE_WITH_XPU
+  static std::mutex set_l3_mutex;
+  const std::lock_guard<std::mutex> lock(set_l3_mutex);
+  if (locked) {
+    if (!lite::TargetWrapperXPU::IsSharedL3Created()) {
+      lite::TargetWrapperXPU::shared_l3_size =
+          lite::TargetWrapperXPU::shared_l3_size > l3_size
+              ? lite::TargetWrapperXPU::shared_l3_size
+              : l3_size;
+    } else {
+      CHECK(lite::TargetWrapperXPU::shared_l3_size >= l3_size)
+          << "Enlarge XPU Shared L3 Cache Is Not Allowed.";
+    }
+    lite::TargetWrapperXPU::local_l3_size = 0;
+  } else {
+    lite::TargetWrapperXPU::local_l3_size = l3_size;
+  }
+#else
+  LOG(WARNING) << "The invoking of the function "
+                  "'set_xpu_l3_cache_method' is ignored, please "
                   "rebuild it with LITE_WITH_XPU=ON.";
 #endif
 }
@@ -369,15 +499,96 @@ void CxxConfig::set_xpu_dev_per_thread(int dev_no) {
 #endif
 }
 
+// **DEPRECATED**, use set_xpu_multi_encoder_method() in the future
 void CxxConfig::set_xpu_multi_encoder_precision(const std::string &precision) {
 #ifdef LITE_WITH_XPU
-  lite::TargetWrapperXPU::multi_encoder_precision = precision;
+  CxxConfig::set_xpu_multi_encoder_method(precision, false);
 #else
   LOG(WARNING) << "The invoking of the function "
                   "'set_xpu_multi_encoder_precision' is "
                   "ignored, please rebuild it with LITE_WITH_XPU=ON.";
 #endif
 }
+
+void CxxConfig::set_xpu_multi_encoder_method(const std::string &precision,
+                                             bool adaptive_seqlen) {
+#ifdef LITE_WITH_XPU
+  lite::TargetWrapperXPU::multi_encoder_precision = precision;
+  lite::TargetWrapperXPU::multi_encoder_adaptive_seqlen = adaptive_seqlen;
+#else
+  LOG(WARNING) << "The invoking of the function "
+                  "'set_xpu_multi_encoder_method' is "
+                  "ignored, please rebuild it with LITE_WITH_XPU=ON.";
+#endif
+}
+
+void CxxConfig::set_xpu_conv_autotune(bool autotune,
+                                      const std::string &autotune_file) {
+#ifdef LITE_WITH_XPU
+  lite::TargetWrapperXPU::conv_autotune = autotune;
+  lite::TargetWrapperXPU::conv_autotune_file = autotune_file;
+#else
+  LOG(WARNING) << "The invoking of the function "
+                  "'set_xpu_conv_autotune' is ignored, please "
+                  "rebuild it with LITE_WITH_XPU=ON.";
+#endif
+}
+
+template <class T>
+void CxxConfig::set_preferred_inputs_for_warmup(const int group_idx,
+                                                const int tensor_idx,
+                                                const shape_t &shape,
+                                                const lod_t &lod,
+                                                const T fill_value,
+                                                const void *data) {
+#ifdef LITE_WITH_XPU
+  if (preferred_inputs_for_warmup_.count(group_idx) == 0) {
+    preferred_inputs_for_warmup_[group_idx] =
+        std::vector<std::shared_ptr<void>>{};
+  }
+  auto &input_tensors = preferred_inputs_for_warmup_[group_idx];
+  while (input_tensors.size() < tensor_idx + 1) {
+    std::shared_ptr<void> input_tensor(
+        static_cast<void *>(new lite::Tensor),
+        [](void *x) { delete static_cast<lite::Tensor *>(x); });
+    input_tensors.emplace_back(input_tensor);
+  }
+
+  auto input_tensor =
+      static_cast<lite::Tensor *>(input_tensors[tensor_idx].get());
+  input_tensor->Resize(shape);
+  input_tensor->set_lod(lod);
+  auto input_data = input_tensor->mutable_data<T>();
+  int64_t size = std::accumulate(
+      shape.begin(), shape.end(), 1, std::multiplies<int64_t>());
+  if (data != nullptr) {
+    memcpy(input_data, data, sizeof(T) * size);
+  } else {
+    for (int64_t i = 0; i < size; i++) {
+      input_data[i] = fill_value;
+    }
+  }
+#else
+  LOG(WARNING)
+      << "'set_preferred_inputs_for_warmup' is only for xpu now, please "
+         "rebuild it with LITE_WITH_XPU=ON.";
+#endif
+}
+
+#define _SetPreferredInputsForWarmup(dtype)                        \
+  template void CxxConfig::set_preferred_inputs_for_warmup<dtype>( \
+      const int group_idx,                                         \
+      const int tensor_idx,                                        \
+      const shape_t &shape,                                        \
+      const lod_t &lod,                                            \
+      const dtype fill_value,                                      \
+      const void *data);
+
+_SetPreferredInputsForWarmup(float);
+_SetPreferredInputsForWarmup(double);
+_SetPreferredInputsForWarmup(int32_t);
+_SetPreferredInputsForWarmup(int64_t);
+#undef _SetPreferredInputsForWarmup
 
 // set model data in combined format, `set_model_from_file` refers to loading
 // model from file, set_model_from_buffer refers to loading model from memory

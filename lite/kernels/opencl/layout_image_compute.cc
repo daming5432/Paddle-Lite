@@ -45,6 +45,9 @@ class LayoutComputeBufferChwToImageDefault
     if (param.process_type == 1) {
       kernel_func_name_ = "buffer_to_image2d_with_pre255";
     }
+    if (!fp16_support_) {
+      build_options_ += " -DCL_DTYPE_FLOAT_FORCE";
+    }
     VLOG(1) << "kernel_func_name_:" << kernel_func_name_;
     auto& context = ctx_->As<OpenCLContext>();
     context.cl_context()->AddKernel(kernel_func_name_,
@@ -71,14 +74,24 @@ class LayoutComputeBufferChwToImageDefault
     }
     auto x_dims = param.x->dims();
     auto image_shape = InitImageDimInfoWith(x_dims);
-    auto* y_data = param.y->mutable_data<half_t, cl::Image2D>(
-        image_shape["width"], image_shape["height"]);
+    auto* y_data = MUTABLE_DATA_GPU(
+        param.y, image_shape["width"], image_shape["height"], nullptr);
     auto y_dims = param.y->dims();
 
     // out info
     std::vector<size_t> new_dims = {1, 1, 1, 1};
-    for (int tidx = 0; tidx < x_dims.size(); ++tidx) {
-      new_dims[4 - x_dims.size() + tidx] = x_dims[tidx];
+    if (x_dims.size() == 5) {
+      new_dims[4 - x_dims.size() + 1] = x_dims[0] * x_dims[1];
+      for (int tidx = 2; tidx < x_dims.size(); ++tidx) {
+        new_dims[4 - x_dims.size() + tidx] = x_dims[tidx];
+      }
+    } else if (x_dims.size() < 5) {
+      for (int tidx = 0; tidx < x_dims.size(); ++tidx) {
+        new_dims[4 - x_dims.size() + tidx] = x_dims[tidx];
+      }
+    } else {
+      LOG(FATAL) << "unsupported layout tensor dims size, the dims size is:"
+                 << x_dims.size();
     }
     const int out_C = new_dims[1];
     const int out_H = new_dims[2];
@@ -111,22 +124,22 @@ class LayoutComputeBufferChwToImageDefault
     kernel_key << kernel_func_name_ << build_options_ << time_stamp_;
     auto kernel = context.cl_context()->GetKernel(kernel_key.str());
 
-    int arg_idx = 0;
-    cl_int status = kernel.setArg(arg_idx, *x_data);
+    cl_int status;
+    status = kernel.setArg(0, *x_data);
     CL_CHECK_FATAL(status);
-    status = kernel.setArg(++arg_idx, *y_data);
+    status = kernel.setArg(1, *y_data);
     CL_CHECK_FATAL(status);
-    status = kernel.setArg(++arg_idx, static_cast<const int>(out_H));
+    status = kernel.setArg(2, static_cast<const int>(out_H));
     CL_CHECK_FATAL(status);
-    status = kernel.setArg(++arg_idx, static_cast<const int>(out_W));
+    status = kernel.setArg(3, static_cast<const int>(out_W));
     CL_CHECK_FATAL(status);
-    status = kernel.setArg(++arg_idx, static_cast<const int>(out_C));
+    status = kernel.setArg(4, static_cast<const int>(out_C));
     CL_CHECK_FATAL(status);
-    status = kernel.setArg(++arg_idx, static_cast<const int>(Stride0));
+    status = kernel.setArg(5, static_cast<const int>(Stride0));
     CL_CHECK_FATAL(status);
-    status = kernel.setArg(++arg_idx, static_cast<const int>(Stride1));
+    status = kernel.setArg(6, static_cast<const int>(Stride1));
     CL_CHECK_FATAL(status);
-    status = kernel.setArg(++arg_idx, static_cast<const int>(Stride2));
+    status = kernel.setArg(7, static_cast<const int>(Stride2));
     CL_CHECK_FATAL(status);
 
 #ifdef LITE_WITH_LOG
@@ -171,6 +184,9 @@ class LayoutComputeImageDefaultToBufferChw
     if (param.process_type == 1) {
       kernel_func_name_ = "image2d_to_buffer_with_post255";
     }
+    if (!fp16_support_) {
+      build_options_ += " -DCL_DTYPE_FLOAT_FORCE";
+    }
     VLOG(1) << "kernel_func_name_:" << kernel_func_name_;
     auto& context = ctx_->As<OpenCLContext>();
     context.cl_context()->AddKernel(kernel_func_name_,
@@ -195,14 +211,24 @@ class LayoutComputeImageDefaultToBufferChw
     } else {
       y_data = param.y->mutable_data<float, cl::Buffer>(TARGET(kOpenCL));
     }
-    auto* x_data = param.x->data<half_t, cl::Image2D>();
+    auto* x_data = GET_DATA_GPU(param.x);
     auto x_dims = param.x->dims();
     auto y_dims = param.y->dims();
     auto x_image_shape = InitImageDimInfoWith(x_dims);
 
     std::vector<size_t> new_dims = {1, 1, 1, 1};
-    for (int j = 0; j < x_dims.size(); ++j) {
-      new_dims[4 - x_dims.size() + j] = x_dims[j];
+    if (x_dims.size() == 5) {
+      new_dims[4 - x_dims.size() + 1] = x_dims[0] * x_dims[1];
+      for (int j = 2; j < x_dims.size(); ++j) {
+        new_dims[4 - x_dims.size() + j] = x_dims[j];
+      }
+    } else if (x_dims.size() < 5) {
+      for (int j = 0; j < x_dims.size(); ++j) {
+        new_dims[4 - x_dims.size() + j] = x_dims[j];
+      }
+    } else {
+      LOG(FATAL) << "unsupported layout tensor dims size, the dims size is: "
+                 << x_dims.size();
     }
 
 #ifdef LITE_WITH_LOG
@@ -316,8 +342,18 @@ class LayoutComputeBufferChwToImage2DNw
 
     // out info
     std::vector<size_t> new_dims = {1, 1, 1, 1};
-    for (int tidx = 0; tidx < x_dims.size(); ++tidx) {
-      new_dims[4 - x_dims.size() + tidx] = x_dims[tidx];
+    if (x_dims.size() == 5) {
+      new_dims[4 - x_dims.size() + 1] = x_dims[0] * x_dims[1];
+      for (int tidx = 2; tidx < x_dims.size(); ++tidx) {
+        new_dims[4 - x_dims.size() + tidx] = x_dims[tidx];
+      }
+    } else if (x_dims.size() < 5) {
+      for (int tidx = 0; tidx < x_dims.size(); ++tidx) {
+        new_dims[4 - x_dims.size() + tidx] = x_dims[tidx];
+      }
+    } else {
+      LOG(FATAL) << "unsupported layout tensor dims size, the dims size is:"
+                 << x_dims.size();
     }
 
     const int out_N = new_dims[0];
@@ -404,6 +440,23 @@ REGISTER_LITE_KERNEL(
                                        DATALAYOUT(kImageDefault))})
     .Finalize();
 
+REGISTER_LITE_KERNEL(
+    layout_once,
+    kOpenCL,
+    kAny,
+    kImageDefault,
+    paddle::lite::kernels::opencl::LayoutComputeBufferChwToImageDefault,
+    NCHW_to_ImageDefault)
+    .BindInput("Input",
+               {LiteType::GetTensorTy(TARGET(kOpenCL),
+                                      PRECISION(kAny),
+                                      DATALAYOUT(kNCHW))})
+    .BindOutput("Out",
+                {LiteType::GetTensorTy(TARGET(kOpenCL),
+                                       PRECISION(kAny),
+                                       DATALAYOUT(kImageDefault))})
+    .Finalize();
+
 // [ImageDefault] -> [NCHW]
 REGISTER_LITE_KERNEL(
     layout,
@@ -421,4 +474,39 @@ REGISTER_LITE_KERNEL(
                                        PRECISION(kAny),
                                        DATALAYOUT(kNCHW))})
     .Finalize();
+
+REGISTER_LITE_KERNEL(
+    layout,
+    kOpenCL,
+    kAny,
+    kNCHW,
+    paddle::lite::kernels::opencl::LayoutComputeImageDefaultToBufferChw,
+    def)
+    .BindInput("Input",
+               {LiteType::GetTensorTy(TARGET(kOpenCL),
+                                      PRECISION(kAny),
+                                      DATALAYOUT(kImageDefault))})
+    .BindOutput("Out",
+                {LiteType::GetTensorTy(TARGET(kOpenCL),
+                                       PRECISION(kAny),
+                                       DATALAYOUT(kAny))})
+    .Finalize();
+
+REGISTER_LITE_KERNEL(
+    layout_once,
+    kOpenCL,
+    kAny,
+    kNCHW,
+    paddle::lite::kernels::opencl::LayoutComputeImageDefaultToBufferChw,
+    ImageDefault_to_NCHW)
+    .BindInput("Input",
+               {LiteType::GetTensorTy(TARGET(kOpenCL),
+                                      PRECISION(kAny),
+                                      DATALAYOUT(kImageDefault))})
+    .BindOutput("Out",
+                {LiteType::GetTensorTy(TARGET(kOpenCL),
+                                       PRECISION(kAny),
+                                       DATALAYOUT(kNCHW))})
+    .Finalize();
+
 #define LITE_WITH_LOG

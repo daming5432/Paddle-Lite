@@ -59,7 +59,9 @@ enum class TargetType : int {
   kAPU = 13,
   kHuaweiAscendNPU = 14,
   kImaginationNNA = 15,
-  NUM = 16,  // number of fields.
+  kIntelFPGA = 16,
+  kMetal = 17,
+  NUM = 18,  // number of fields.
 };
 enum class PrecisionType : int {
   kUnk = 0,
@@ -83,7 +85,9 @@ enum class DataLayoutType : int {
   kImageFolder = 5,   // for opencl image2d
   kImageNW = 6,       // for opencl image2d
   kAny = 2,           // any data layout
-  NUM = 7,            // number of fields.
+  kMetalTexture2DArray = 7,
+  kMetalTexture2D = 8,
+  NUM = 9,  // number of fields.
 };
 
 typedef enum {
@@ -94,6 +98,19 @@ typedef enum {
   LITE_POWER_RAND_HIGH = 4,
   LITE_POWER_RAND_LOW = 5
 } PowerMode;
+
+typedef enum {
+  CL_TUNE_NONE = 0,
+  CL_TUNE_RAPID = 1,
+  CL_TUNE_NORMAL = 2,
+  CL_TUNE_EXHAUSTIVE = 3
+} CLTuneMode;
+
+typedef enum {
+  CL_PRECISION_AUTO = 0,
+  CL_PRECISION_FP32 = 1,
+  CL_PRECISION_FP16 = 2
+} CLPrecisionType;
 
 typedef enum { MLU_220 = 0, MLU_270 = 1 } MLUCoreVersion;
 
@@ -113,7 +130,14 @@ enum class ActivationType : int {
   kThresholdedRelu = 12,
   kElu = 13,
   kHardSigmoid = 14,
-  NUM = 15,
+  kLog = 15,
+  kSigmoid_v2 = 16,
+  kTanh_v2 = 17,
+  kGelu = 18,
+  kErf = 19,
+  kSign = 20,
+  kSoftPlus = 21,
+  NUM = 22,
 };
 
 static size_t PrecisionTypeLength(PrecisionType type) {
@@ -132,8 +156,10 @@ static size_t PrecisionTypeLength(PrecisionType type) {
       return 8;
     case PrecisionType::kFP16:
       return 2;
+    case PrecisionType::kInt16:
+      return 2;
     default:
-      return 4;
+      return 0;
   }
 }
 
@@ -168,6 +194,11 @@ struct PrecisionTypeTrait {
 
 _ForEachPrecisionType(DefinePrecisionTypeTrait);
 
+#ifdef ENABLE_ARM_FP16
+typedef __fp16 float16_t;
+_ForEachPrecisionTypeHelper(DefinePrecisionTypeTrait, float16_t, kFP16);
+#endif
+
 #undef _ForEachPrecisionTypeHelper
 #undef _ForEachPrecisionType
 #undef DefinePrecisionTypeTrait
@@ -189,6 +220,10 @@ const std::string& TargetRepr(TargetType target);
 const std::string& PrecisionRepr(PrecisionType precision);
 
 const std::string& DataLayoutRepr(DataLayoutType layout);
+
+const std::string& CLTuneModeToStr(CLTuneMode mode);
+
+const std::string& CLPrecisionTypeToStr(CLPrecisionType type);
 
 // Get a set of all the elements represented by the target.
 std::set<TargetType> ExpandValidTargets(TargetType target = TARGET(kAny));

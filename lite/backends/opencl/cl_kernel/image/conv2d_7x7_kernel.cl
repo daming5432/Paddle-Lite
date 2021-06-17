@@ -18,7 +18,8 @@ __kernel void conv2d_7x7(__private const int global_size_dim0,
                          __private const int input_width,  /* of one block */
                          __private const int input_height, /* of one block */
                          __private const int output_width,
-                         __private const int output_height) {
+                         __private const int output_height,
+                         __read_only image2d_t prelu_alpha) {
 
   const int out_c = get_global_id(0);
   const int out_w = get_global_id(1);
@@ -47,18 +48,15 @@ __kernel void conv2d_7x7(__private const int global_size_dim0,
   ouput_pos_in_one_block.x = out_w;
   ouput_pos_in_one_block.y = out_nh_in_one_batch;
 
-  const sampler_t sampler =
-      CLK_NORMALIZED_COORDS_TRUE | CLK_ADDRESS_CLAMP | CLK_FILTER_NEAREST;
-
   int2 in_pos_in_one_block;
   in_pos_in_one_block.x = ouput_pos_in_one_block.x * stride + offset;
   in_pos_in_one_block.y = ouput_pos_in_one_block.y * stride + offset;
 
 #ifdef BIASE_CH
   CL_DTYPE4 output =
-      READ_IMG_TYPE(CL_DTYPE_CHAR, bias, sampler, (int2)(out_c, 0));
+      READ_IMG_TYPE(CL_DTYPE_CHAR, bias, SAMPLER, (int2)(out_c, 0));
 #elif defined(BIASE_ELE)
-  CL_DTYPE4 output = READ_IMG_TYPE(CL_DTYPE_CHAR, bias, sampler, output_pos);
+  CL_DTYPE4 output = READ_IMG_TYPE(CL_DTYPE_CHAR, bias, SAMPLER, output_pos);
 #else
   CL_DTYPE4 output = 0.0f;
 #endif
@@ -74,19 +72,17 @@ __kernel void conv2d_7x7(__private const int global_size_dim0,
                          in_pos_in_one_block.y + batch_index * input_height);
     for (int j = 0; j < 7; j++) {
       for (int k = 0; k < 7; k++) {
-        input = select(
+        input = SELECT(
             READ_IMG_TYPE(CL_DTYPE_CHAR,
                           input_image,
-                          sampler,
+                          SAMPLER,
                           (int2)(pos_in.x + (j - 3) * dilation,
                                  pos_in.y + (k - 3) * dilation)),
             (CL_DTYPE4)(0.0f),
-            (ushort4)(
-                (in_pos_in_one_block.x + (j - 3) * dilation < 0 ||
-                 in_pos_in_one_block.y + (k - 3) * dilation < 0 ||
-                 in_pos_in_one_block.x + (j - 3) * dilation >= input_width ||
-                 in_pos_in_one_block.y + (k - 3) * dilation >= input_height)
-                << 15));
+            in_pos_in_one_block.x + (j - 3) * dilation < 0 ||
+                in_pos_in_one_block.y + (k - 3) * dilation < 0 ||
+                in_pos_in_one_block.x + (j - 3) * dilation >= input_width ||
+                in_pos_in_one_block.y + (k - 3) * dilation >= input_height);
         int filter_h = k;
         int filter_w = j;
         int filter_c = i;
@@ -104,13 +100,13 @@ __kernel void conv2d_7x7(__private const int global_size_dim0,
         filter_pos3.y = filter_n3 * 7 + filter_h;
 
         filter[0] =
-            READ_IMG_TYPE(CL_DTYPE_CHAR, filter_image, sampler, filter_pos0);
+            READ_IMG_TYPE(CL_DTYPE_CHAR, filter_image, SAMPLER, filter_pos0);
         filter[1] =
-            READ_IMG_TYPE(CL_DTYPE_CHAR, filter_image, sampler, filter_pos1);
+            READ_IMG_TYPE(CL_DTYPE_CHAR, filter_image, SAMPLER, filter_pos1);
         filter[2] =
-            READ_IMG_TYPE(CL_DTYPE_CHAR, filter_image, sampler, filter_pos2);
+            READ_IMG_TYPE(CL_DTYPE_CHAR, filter_image, SAMPLER, filter_pos2);
         filter[3] =
-            READ_IMG_TYPE(CL_DTYPE_CHAR, filter_image, sampler, filter_pos3);
+            READ_IMG_TYPE(CL_DTYPE_CHAR, filter_image, SAMPLER, filter_pos3);
 
         output.x += dot(input, filter[0]);
         output.y += dot(input, filter[1]);
@@ -122,11 +118,29 @@ __kernel void conv2d_7x7(__private const int global_size_dim0,
 
 #ifdef BATCH_NORM
   output = output * READ_IMG_TYPE(
-                        CL_DTYPE_CHAR, new_scale, sampler, (int2)(out_c, 0)) +
-           READ_IMG_TYPE(CL_DTYPE_CHAR, new_biase, sampler, (int2)(out_c, 0));
+                        CL_DTYPE_CHAR, new_scale, SAMPLER, (int2)(out_c, 0)) +
+           READ_IMG_TYPE(CL_DTYPE_CHAR, new_biase, SAMPLER, (int2)(out_c, 0));
 #endif
 
-  output = activation_type4(output);
+  CL_DTYPE4 alpha0;
+#ifdef PRELU_CH  //{
+  alpha0 = READ_IMG_TYPE(CL_DTYPE_CHAR, prelu_alpha, SAMPLER, (int2)(out_c, 0));
+//}
+#elif defined(PRELU_ELE)  //{
+  alpha0 = READ_IMG_TYPE(CL_DTYPE_CHAR, prelu_alpha, SAMPLER, output_pos);
+//}
+#elif defined(PRELU_ALL)  //{
+  alpha0 = READ_IMG_TYPE(CL_DTYPE_CHAR, prelu_alpha, SAMPLER, (int2)(0, 0));
+  alpha0.y = alpha0.x;
+  alpha0.z = alpha0.x;
+  alpha0.w = alpha0.x;
+//}
+#endif
+  output = activation_type4(output, alpha0);
+
+#ifdef SCALE_ACTIVATION
+  output = fuse_scale(output, 1.f, 0.f, 0.f);
+#endif
 
   WRITE_IMG_TYPE(CL_DTYPE_CHAR, output_image, output_pos, output);
 }

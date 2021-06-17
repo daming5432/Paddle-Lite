@@ -42,7 +42,7 @@ class InstanceNormImageCompute : public KernelLite<TARGET(kOpenCL),
     return "InstanceNorm using cl::Image2D(ImageDefault/RGBA), kFP16";
   }
 
-#if 1  // onnx/pytorch version
+#if 1
   void PrepareForRun() override {
     instance_norm_param_ = param_.get_mutable<param_t>();
     auto out_h = instance_norm_param_->out->dims()[2];
@@ -54,7 +54,9 @@ class InstanceNormImageCompute : public KernelLite<TARGET(kOpenCL),
     } else if (out_h == 64) {
       build_options_ += " -DLOCAL_MEM_64";
     }
-
+    if (instance_norm_param_->activation_type == "relu") {
+      build_options_ += " -DRELU";
+    }
     auto& context = ctx_->As<OpenCLContext>();
     CHECK(context.cl_context() != nullptr);
     context.cl_context()->AddKernel(kernel_func_name_,
@@ -66,6 +68,36 @@ class InstanceNormImageCompute : public KernelLite<TARGET(kOpenCL),
     STL::stringstream kernel_key;
     kernel_key << kernel_func_name_ << build_options_ << time_stamp_;
     kernel_ = context.cl_context()->GetKernel(kernel_key.str());
+
+    auto& out_dims = instance_norm_param_->out->dims();
+    int batch = out_dims[0];
+    int channel = out_dims[1];
+    int cgroup = (channel + 3) / 4;
+    int cround = cgroup * 4;
+
+    std::vector<half_t> scale_img(cround * batch);
+    std::vector<half_t> bias_img(cround * batch);
+    const float* scale_data = instance_norm_param_->scale->data<float>();
+    const float* bias_data = instance_norm_param_->bias->data<float>();
+
+    for (int i = 0; i < channel; ++i) {
+      scale_img[i] = Float2Half(scale_data[i]);
+      bias_img[i] = Float2Half(bias_data[i]);
+    }
+
+    for (int i = 1; i < batch; ++i) {
+      memcpy(scale_img.data() + i * cround,
+             scale_img.data(),
+             cround * sizeof(half_t));
+      memcpy(bias_img.data() + i * cround,
+             bias_img.data(),
+             cround * sizeof(half_t));
+    }
+    DDim scale_img_size{{ cgroup, batch }};
+    MUTABLE_DATA_GPU(
+        &scale_image_, scale_img_size[0], scale_img_size[1], scale_img.data());
+    MUTABLE_DATA_GPU(
+        &bias_image_, scale_img_size[0], scale_img_size[1], bias_img.data());
   }
 
   void ReInitWhenNeeded() override {
@@ -121,9 +153,11 @@ class InstanceNormImageCompute : public KernelLite<TARGET(kOpenCL),
 #endif
 
     auto out_image_shape = InitImageDimInfoWith(out_dims);
-    auto* x_img = x->data<half_t, cl::Image2D>();
-    auto* out_img = out->mutable_data<half_t, cl::Image2D>(
-        out_image_shape["width"], out_image_shape["height"]);
+    auto* x_img = GET_DATA_GPU(x);
+    auto* out_img = MUTABLE_DATA_GPU(
+        out, out_image_shape["width"], out_image_shape["height"], nullptr);
+    auto* scale_img = GET_DATA_GPU(&scale_image_);
+    auto* bias_img = GET_DATA_GPU(&bias_image_);
 
     cl_int status = kernel_.setArg(0, out_w);
     CL_CHECK_FATAL(status);
@@ -131,15 +165,19 @@ class InstanceNormImageCompute : public KernelLite<TARGET(kOpenCL),
     CL_CHECK_FATAL(status);
     status = kernel_.setArg(2, out_c_group);
     CL_CHECK_FATAL(status);
-    status = kernel_.setArg(3, lws_[1]);
+    status = kernel_.setArg(3, static_cast<int>(lws_[1]));
     CL_CHECK_FATAL(status);
-    status = kernel_.setArg(4, lws_[2]);
+    status = kernel_.setArg(4, static_cast<int>(lws_[2]));
     CL_CHECK_FATAL(status);
     status = kernel_.setArg(5, epsilon);
     CL_CHECK_FATAL(status);
     status = kernel_.setArg(6, *x_img);
     CL_CHECK_FATAL(status);
     status = kernel_.setArg(7, *out_img);
+    CL_CHECK_FATAL(status);
+    status = kernel_.setArg(8, *scale_img);
+    CL_CHECK_FATAL(status);
+    status = kernel_.setArg(9, *bias_img);
     CL_CHECK_FATAL(status);
 
     status = EnqueueNDRangeKernel(
@@ -281,8 +319,8 @@ class InstanceNormImageCompute : public KernelLite<TARGET(kOpenCL),
   param_t* instance_norm_param_{nullptr};
   bool first_epoch_for_reinit_{true};
   DDim last_x_dims_;
-  std::string kernel_func_name_{"instance_norm_onnx"};
-  std::string build_options_{"-DCL_DTYPE_half"};
+  std::string kernel_func_name_{"instance_norm"};
+  std::string build_options_{""};
   std::string time_stamp_{GetTimeStamp()};
   cl::Kernel kernel_;
   cl::NDRange gws_, lws_;

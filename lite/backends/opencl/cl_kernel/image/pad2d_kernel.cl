@@ -14,14 +14,17 @@ limitations under the License. */
 
 #include <cl_common.h>
 
-__kernel void pad2d_constant(
-    __read_only image2d_t input, __write_only image2d_t output,
-    const int in_height, const int in_width,
-    const int out_height, const int out_width,
-    const int pad_h0, const int pad_h1,
-    const int pad_w0, const int pad_w1,
-    const float pad_value) {
-        
+__kernel void pad2d_constant(__read_only image2d_t input,
+                             __write_only image2d_t output,
+                             const int in_height,
+                             const int in_width,
+                             const int out_height,
+                             const int out_width,
+                             const int pad_h0,
+                             const int pad_h1,
+                             const int pad_w0,
+                             const int pad_w1,
+                             const float pad_value) {
   const int out_c = get_global_id(0);
   const int out_w = get_global_id(1);
   const int out_nh = get_global_id(2);
@@ -29,9 +32,6 @@ __kernel void pad2d_constant(
   const int out_h = out_nh % out_height;
 
   int2 output_pos = (int2)(mad24(out_c, out_width, out_w), out_nh);
-
-  const sampler_t sampler =
-      CLK_NORMALIZED_COORDS_TRUE | CLK_ADDRESS_CLAMP | CLK_FILTER_NEAREST;
 
   int x = out_w - pad_w0;
   int y = out_h - pad_h0;
@@ -40,19 +40,22 @@ __kernel void pad2d_constant(
     WRITE_IMG_TYPE(CL_DTYPE_CHAR, output, output_pos, (CL_DTYPE4)(pad_value));
   } else {
     int2 coor = (int2)(out_c * in_width + x, out_n * in_height + y);
-    CL_DTYPE4 pixel = READ_IMG_TYPE(CL_DTYPE_CHAR, input, sampler, coor);
+    CL_DTYPE4 pixel = READ_IMG_TYPE(CL_DTYPE_CHAR, input, SAMPLER, coor);
     WRITE_IMG_TYPE(CL_DTYPE_CHAR, output, output_pos, pixel);
   }
 }
 
-__kernel void pad2d_reflect(
-    __read_only image2d_t input, __write_only image2d_t output,
-    const int in_height, const int in_width,
-    const int out_height, const int out_width,
-    const int pad_h0, const int pad_h1,
-    const int pad_w0, const int pad_w1,
-    const float pad_value) {
-        
+__kernel void pad2d_reflect(__read_only image2d_t input,
+                            __write_only image2d_t output,
+                            const int in_height,
+                            const int in_width,
+                            const int out_height,
+                            const int out_width,
+                            const int pad_h0,
+                            const int pad_h1,
+                            const int pad_w0,
+                            const int pad_w1,
+                            const float pad_value) {
   const int out_c = get_global_id(0);
   const int out_w = get_global_id(1);
   const int out_nh = get_global_id(2);
@@ -60,9 +63,6 @@ __kernel void pad2d_reflect(
   const int out_h = out_nh % out_height;
 
   int2 output_pos = (int2)(mad24(out_c, out_width, out_w), out_nh);
-
-  const sampler_t sampler =
-      CLK_NORMALIZED_COORDS_TRUE | CLK_ADDRESS_CLAMP | CLK_FILTER_NEAREST;
 
   int x = out_w - pad_w0;
   int y = out_h - pad_h0;
@@ -72,18 +72,21 @@ __kernel void pad2d_reflect(
   x = x < in_width ? x : 2 * in_width - 2 - x;
   y = y < in_height ? y : 2 * in_height - 2 - y;
   int2 coor = (int2)(out_c * in_width + x, out_n * in_height + y);
-  CL_DTYPE4 pixel = READ_IMG_TYPE(CL_DTYPE_CHAR, input, sampler, coor);
+  CL_DTYPE4 pixel = READ_IMG_TYPE(CL_DTYPE_CHAR, input, SAMPLER, coor);
   WRITE_IMG_TYPE(CL_DTYPE_CHAR, output, output_pos, pixel);
 }
 
-__kernel void pad2d_edge(
-    __read_only image2d_t input, __write_only image2d_t output,
-    const int in_height, const int in_width,
-    const int out_height, const int out_width,
-    const int pad_h0, const int pad_h1,
-    const int pad_w0, const int pad_w1,
-    const float pad_value) {
-        
+__kernel void pad2d_edge(__read_only image2d_t input,
+                         __write_only image2d_t output,
+                         const int in_height,
+                         const int in_width,
+                         const int out_height,
+                         const int out_width,
+                         const int pad_h0,
+                         const int pad_h1,
+                         const int pad_w0,
+                         const int pad_w1,
+                         const float pad_value) {
   const int out_c = get_global_id(0);
   const int out_w = get_global_id(1);
   const int out_nh = get_global_id(2);
@@ -91,9 +94,6 @@ __kernel void pad2d_edge(
   const int out_h = out_nh % out_height;
 
   int2 output_pos = (int2)(mad24(out_c, out_width, out_w), out_nh);
-
-  const sampler_t sampler =
-      CLK_NORMALIZED_COORDS_TRUE | CLK_ADDRESS_CLAMP | CLK_FILTER_NEAREST;
 
   int x = out_w - pad_w0;
   int y = out_h - pad_h0;
@@ -103,6 +103,6 @@ __kernel void pad2d_edge(
   y = y > 0 ? y : 0;
   y = y < in_height ? y : in_height - 1;
   int2 coor = (int2)(out_c * in_width + x, out_n * in_height + y);
-  CL_DTYPE4 pixel = READ_IMG_TYPE(CL_DTYPE_CHAR, input, sampler, coor);
+  CL_DTYPE4 pixel = READ_IMG_TYPE(CL_DTYPE_CHAR, input, SAMPLER, coor);
   WRITE_IMG_TYPE(CL_DTYPE_CHAR, output, output_pos, pixel);
 }

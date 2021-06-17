@@ -20,6 +20,8 @@
 #elif defined(_WIN32)
 #define NOMINMAX  // msvc max/min macro conflict with std::min/max
 #include <windows.h>
+#undef min
+#undef max
 #else
 #include <unistd.h>
 #endif  // _WIN32
@@ -27,6 +29,7 @@
 #include <cmath>
 #include <cstdlib>
 #include <random>
+#include <string>
 #include "lite/core/tensor.h"
 
 namespace paddle {
@@ -94,6 +97,7 @@ void fill_tensor_host_rand_impl<unsigned char>(unsigned char* dio,
     dio[i] = rand() % 256;  // NOLINT
   }
 }
+
 /**
  *  \brief Fill the host tensor buffer with rand value.
  *  \param The reference of input tensor.
@@ -131,6 +135,7 @@ void fill_tensor_host_rand_impl2(Dtype* dio,
   for (int64_t i = 0; i < size; ++i) {
     Dtype random_num = static_cast<Dtype>(vstart + (vend - vstart) * dis(gen));
     dio[i] = random_num;
+    // dio[i] = i % 110 +1;
   }
 }
 
@@ -165,42 +170,18 @@ void fill_tensor_rand(Tensor& tensor, float vstart, float vend) {  // NOLINT
 }
 
 template <typename Dtype>
-void print_tensor_host_impl(const Dtype* din, int64_t size, int64_t width);
-
-template <>
-void print_tensor_host_impl(const float* din, int64_t size, int64_t width) {
+void print_tensor_host_impl(const Dtype* din, int64_t size, int64_t width) {
+  std::ostringstream os;
   for (int i = 0; i < size; ++i) {
-    printf("%.6f ", din[i]);
+    os << din[i] << " ";
     if ((i + 1) % width == 0) {
-      printf("\n");
+      VLOG(4) << os.str();
+      os.str("");
     }
   }
-  printf("\n");
+  VLOG(4) << "\n";
 }
 
-template <>
-void print_tensor_host_impl(const int* din, int64_t size, int64_t width) {
-  for (int i = 0; i < size; ++i) {
-    printf("%d ", din[i]);
-    if ((i + 1) % width == 0) {
-      printf("\n");
-    }
-  }
-  printf("\n");
-}
-
-template <>
-void print_tensor_host_impl(const signed char* din,
-                            int64_t size,
-                            int64_t width) {
-  for (int i = 0; i < size; ++i) {
-    printf("%d ", din[i]);
-    if ((i + 1) % width == 0) {
-      printf("\n");
-    }
-  }
-  printf("\n");
-}
 /**
  *  \brief Print the data in host tensor.
  *  \param tensor  The reference of input tensor.
@@ -312,9 +293,27 @@ template <typename dtype>
 void tensor_diff_kernel(const dtype* src1,
                         const dtype* src2,
                         dtype* dst,
-                        int64_t size) {
-  for (int i = 0; i < size; ++i) {
-    dst[i] = src1[i] - src2[i];
+                        int64_t size,
+                        PrecisionType precision) {
+  switch (precision) {
+    case PRECISION(kFloat):
+    case PRECISION(kInt32):
+      for (int i = 0; i < size; ++i) {
+        VLOG(4) << i << "   " << src1[i] << "  " << src2[i];
+        dst[i] = src1[i] - src2[i];
+      }
+      return;
+    case PRECISION(kInt8):
+      for (int i = 0; i < size; ++i) {
+        dst[i] = src1[i] - src2[i];
+        if (static_cast<int>(abs(dst[i])) > 0.1) {
+          VLOG(4) << i << "   " << static_cast<int>(src1[i]) << "  "
+                  << static_cast<int>(src2[i]);
+        }
+      }
+      return;
+    default:
+      LOG(FATAL) << "data type error";
   }
 }
 void tensor_diff(const Tensor& t1, const Tensor& t2, Tensor& tdiff) {  // NOLINT
@@ -333,16 +332,21 @@ void tensor_diff(const Tensor& t1, const Tensor& t2, Tensor& tdiff) {  // NOLINT
       tensor_diff_kernel(t1.data<float>(),
                          t2.data<float>(),
                          tdiff.mutable_data<float>(),
-                         size1);
+                         size1,
+                         t1.precision());
       return;
     case PRECISION(kInt32):
-      tensor_diff_kernel(
-          t1.data<int>(), t2.data<int>(), tdiff.mutable_data<int>(), size1);
+      tensor_diff_kernel(t1.data<int>(),
+                         t2.data<int>(),
+                         tdiff.mutable_data<int>(),
+                         size1,
+                         t1.precision());
     case PRECISION(kInt8):
       tensor_diff_kernel(t1.data<int8_t>(),
                          t2.data<int8_t>(),
                          tdiff.mutable_data<int8_t>(),
-                         size1);
+                         size1,
+                         t1.precision());
       return;
     default:
       LOG(FATAL) << "data type: " << ptype1 << " is unsupported now";

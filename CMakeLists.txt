@@ -18,7 +18,14 @@ include(lite_utils)
 
 set(PADDLE_SOURCE_DIR ${CMAKE_CURRENT_SOURCE_DIR})
 set(PADDLE_BINARY_DIR ${CMAKE_CURRENT_BINARY_DIR})
-set(CMAKE_CXX_STANDARD 11)
+
+if(LITE_WITH_XTCL OR LITE_WITH_METAL)
+    set(CMAKE_CXX_STANDARD 14)
+else()
+    set(CMAKE_CXX_STANDARD 11)
+endif()
+
+set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
 include(system)
 include(cross_compiling/preproject)
@@ -30,6 +37,9 @@ message(STATUS "C compiler: ${CMAKE_C_COMPILER}, version: "
         "${CMAKE_C_COMPILER_ID} ${CMAKE_C_COMPILER_VERSION}")
 message(STATUS "AR tools: ${CMAKE_AR}")
 
+if(NOT APPLE)
+    set(CMAKE_SHARED_LINKER_FLAGS "${CMAKE_SHARED_LINKER_FLAGS} -Wl,--as-needed")
+endif()
 
 if(WIN32)
     option(MSVC_STATIC_CRT "use static C Runtime library by default" ON)
@@ -77,6 +87,7 @@ lite_option(WITH_SYSTEM_BLAS    "Use system blas library"           OFF)
 
 # for lite, both server and mobile framework.
 lite_option(LITE_WITH_JAVA      "Enable Java JNI lib in lite mode" OFF)
+lite_option(LITE_WITH_STATIC_LIB      "Enable static cplus lib in lite mode" OFF)
 lite_option(LITE_WITH_PYTHON    "Enable Python api lib in lite mode" OFF)
 lite_option(LITE_WITH_CUDA      "Enable CUDA in lite mode" OFF)
 lite_option(LITE_WITH_X86       "Enable X86 in lite mode"  ON)
@@ -93,7 +104,9 @@ lite_option(LITE_WITH_APU       "Enable APU in lite mode"  OFF)
 lite_option(LITE_WITH_TRAIN     "Enable training operators and kernels in lite" OFF)
 lite_option(LITE_WITH_OPENMP    "Enable OpenMP in lite framework" ON)
 lite_option(LITE_WITH_OPENCL    "Enable OpenCL support in lite" OFF)
+lite_option(LITE_WITH_METAL     "Enable Metal support in lite" OFF)
 lite_option(LITE_WITH_FPGA      "Enable FPGA support in lite" OFF)
+lite_option(LITE_WITH_INTEL_FPGA      "Enable Intel FPGA support in lite" OFF)
 lite_option(LITE_WITH_LIGHT_WEIGHT_FRAMEWORK  "Enable light-weight framework" OFF)
 lite_option(LITE_WITH_PROFILE   "Enable profile mode in lite framework"  OFF)
 lite_option(LITE_WITH_PRECISION_PROFILE "Enable precision profile in profile mode ON in lite" OFF)
@@ -111,6 +124,10 @@ lite_option(LITE_WITH_CV        "Enable build cv image in lite" OFF)
 lite_option(LITE_WITH_STATIC_CUDA "Statically link cuda libraries." OFF)
 lite_option(CUDA_WITH_FP16      "Compile with cuda half support" OFF)
 lite_option(LITE_WITH_ARM_CLANG "when arm lang is clang, its ON." OFF)
+lite_option(LITE_WITH_XCODE     "when debug in xcode, its ON." OFF)
+lite_option(LITE_WITH_ARM82_FP16  "when compile with arm v8.2 fp16, it's ON." OFF)
+lite_option(LITE_WITH_ARM82_INT8_SDOT  "when compile with arm v8.2 int8, it's ON." OFF)
+lite_option(LITE_WITH_CODE_META_INFO  "include git version in the header file." ON)
 
 # TODO(Superjomn) Remove WITH_ANAKIN option if not needed latter.
 if(ANDROID OR IOS OR ARMLINUX)
@@ -175,7 +192,28 @@ if(LITE_WITH_IMAGINATION_NNA)
 	include(device/imagination_nna)
 endif()
 
-include(external/flatbuffers)
+if(LITE_WITH_INTEL_FPGA)
+	include(device/intel_fpga)
+endif()
+
+# flatbuffer module for loading model
+if(LITE_UPDATE_FBS_HEAD)
+    include(external/flatbuffers)
+else()
+    include_directories("${PADDLE_SOURCE_DIR}/third-party/flatbuffers/pre-build")
+    add_custom_target(fbs_headers ${TARGET}
+            COMMAND ${CMAKE_COMMAND} -E copy_if_different "${CMAKE_SOURCE_DIR}/third-party/flatbuffers/pre-build/framework_generated.h" "${CMAKE_SOURCE_DIR}/lite/model_parser/flatbuffers/"
+            COMMAND ${CMAKE_COMMAND} -E copy_if_different "${CMAKE_SOURCE_DIR}/third-party/flatbuffers/pre-build/param_generated.h" "${CMAKE_SOURCE_DIR}/lite/model_parser/flatbuffers/"
+            COMMAND ${CMAKE_COMMAND} -E copy_if_different "${CMAKE_SOURCE_DIR}/third-party/flatbuffers/pre-build/cache_generated.h" "${CMAKE_SOURCE_DIR}/lite/backends/opencl/utils/"
+            COMMAND ${CMAKE_COMMAND} -E copy_if_different "${CMAKE_SOURCE_DIR}/third-party/flatbuffers/pre-build/tune_cache_generated.h" "${CMAKE_SOURCE_DIR}/lite/backends/opencl/utils/"
+            )
+endif()
+
+# for opencl
+if (LITE_WITH_OPENCL)
+    include(external/opencl-headers)
+    include(external/opencl-clhpp)
+endif()
 
 # for mobile
 if (WITH_LITE AND LITE_WITH_LIGHT_WEIGHT_FRAMEWORK)
@@ -195,12 +233,6 @@ if (WITH_LITE AND LITE_WITH_LIGHT_WEIGHT_FRAMEWORK)
         include(external/gtest)     # download, build, install gtest
         include(ccache)             # set ccache for compilation
         include(external/protobuf)  # download, build, install protobuf
-    endif()
-
-    # for opencl
-    if (LITE_WITH_OPENCL)
-        include(external/opencl-headers)
-        include(external/opencl-clhpp)
     endif()
 
     include(generic)            # simplify cmake module
@@ -271,4 +303,25 @@ endif()
 set(CMAKE_CXX_FLAGS_RELWITHDEBINFO "-O3 -g -DNDEBUG")
 set(CMAKE_C_FLAGS_RELWITHDEBINFO "-O3 -g -DNDEBUG")
 
+
+if(APPLE)
+    if(NOT DEFINED ENABLE_ARC)
+        # Unless specified, enable ARC support by default
+        set(ENABLE_ARC TRUE)
+        message(STATUS "Enabling ARC support by default. ENABLE_ARC not provided!")
+    endif()
+
+    set(ENABLE_ARC_INT ${ENABLE_ARC} CACHE BOOL "Whether or not to enable ARC" ${FORCE_CACHE})
+    if(ENABLE_ARC_INT)
+        set(FOBJC_ARC "-fobjc-arc")
+        set(CMAKE_XCODE_ATTRIBUTE_CLANG_ENABLE_OBJC_ARC YES CACHE INTERNAL "")
+        message(STATUS "Enabling ARC support.")
+    else()
+        set(FOBJC_ARC "-fno-objc-arc")
+        set(CMAKE_XCODE_ATTRIBUTE_CLANG_ENABLE_OBJC_ARC NO CACHE INTERNAL "")
+        message(STATUS "Disabling ARC support.")
+    endif()
+    set(CMAKE_C_FLAGS "${FOBJC_ARC} ${CMAKE_C_FLAGS}")
+    set(CMAKE_CXX_FLAGS "${FOBJC_ARC} ${CMAKE_CXX_FLAGS}")
+endif ()
 add_subdirectory(lite)

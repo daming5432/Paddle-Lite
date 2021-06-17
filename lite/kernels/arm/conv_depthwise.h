@@ -47,6 +47,7 @@ class DepthwiseConv : public KernelLite<TARGET(kARM), Ptype> {
   DepthwiseConv() = default;
   ~DepthwiseConv() {}
   virtual void PrepareForRun();
+  virtual void ReInitWhenNeeded();
   virtual void Run();
 
 #ifdef LITE_WITH_PROFILE
@@ -55,13 +56,26 @@ class DepthwiseConv : public KernelLite<TARGET(kARM), Ptype> {
     ch->kernel_func_name = kernel_func_name_;
   }
 
-  std::string kernel_func_name_{"NotImplForConvDw"};
+  std::string kernel_func_name_{"NotImplForConvDW"};
+#define PROFILE_INFO(dtype1, dtype2)                                        \
+  template <>                                                               \
+  void DepthwiseConv<PRECISION(dtype1), PRECISION(dtype2)>::                \
+      SetProfileRuntimeKernelInfo(paddle::lite::profile::OpCharacter* ch) { \
+    ch->kernel_func_name = kernel_func_name_;                               \
+  }
+
+#define KERNEL_FUNC_NAME(kernel_func_name) kernel_func_name_ = kernel_func_name;
+
+#else
+#define PROFILE_INFO(dtype1, dtype2)
+#define KERNEL_FUNC_NAME(kernel_func_name)
 #endif
 
  private:
   using param_t = operators::ConvParam;
   Tensor weights_;
   Tensor bias_;
+  DDim last_shape_;
   bool flag_trans_weights_{false};
   bool flag_trans_bias_{false};
   conv_dw_impl impl_{nullptr};
