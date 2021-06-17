@@ -14,13 +14,16 @@
 
 #pragma once
 
+#include <map>
 #include <memory>
+#include <string>
 #include <utility>
 #include <vector>
+#include "lite/model_parser/base/io.h"
 #include "lite/model_parser/base/program_desc.h"
 #include "lite/model_parser/flatbuffers/block_desc.h"
 #include "lite/model_parser/flatbuffers/framework_generated.h"
-#include "lite/model_parser/flatbuffers/memory.h"
+#include "lite/model_parser/flatbuffers/op_version_map.h"
 #include "lite/utils/all.h"
 
 namespace paddle {
@@ -30,21 +33,41 @@ namespace fbs {
 class ProgramDescView : public ProgramDescAPI {
  public:
   ProgramDescView() = default;
-  explicit ProgramDescView(Buffer&& buf) { Init(std::forward<Buffer>(buf)); }
 
-  void Init(Buffer&& buf) {
+  ProgramDescView(const ProgramDescView&) = delete;
+
+  explicit ProgramDescView(model_parser::Buffer&& buf) {
+    Init(std::forward<model_parser::Buffer>(buf));
+  }
+
+  void Init(model_parser::Buffer&& buf) {
     CHECK(buf.data());
     buf_ = std::move(buf);
     InitProgramDesc();
   }
 
   void InitProgramDesc() {
+    flatbuffers::Verifier verifier(static_cast<const uint8_t*>(buf_.data()),
+                                   buf_.size());
+    CHECK(verifier.VerifyBuffer<paddle::lite::fbs::proto::ProgramDesc>(nullptr))
+        << "Program verification failed.";
     desc_ = proto::GetProgramDesc(buf_.data());
     blocks_.resize(desc_->blocks()->size());
     for (size_t idx = 0; idx < BlocksSize(); ++idx) {
-      blocks_[idx] = BlockDescView(desc_->blocks()->Get(idx));
+      blocks_[idx].reset(new BlockDescView(desc_->blocks()->Get(idx)));
     }
   }
+
+  /////////////////////////////////////////////////////////////////
+  // Name: OpVersionMap
+  // Description: a map that strores paddle ops version
+  // note: flatbuffer doesn't contain op_version_map, because
+  //       op_version_map is not useful in inference period.
+  /////////////////////////////////////////////////////////////////
+  bool HasOpVersionMap() const override { return false; }
+
+  template <typename T>
+  T* GetOpVersionMap();
 
   size_t BlocksSize() const override { return blocks_.size(); }
 
@@ -57,7 +80,9 @@ class ProgramDescView : public ProgramDescAPI {
     return nullptr;
   }
 
-  const std::vector<BlockDescView>& GetBlocks() const { return blocks_; }
+  const std::vector<std::unique_ptr<BlockDescView>>& GetBlocks() const {
+    return blocks_;
+  }
 
   bool HasVersion() const override { return desc_->version() != nullptr; }
 
@@ -75,16 +100,12 @@ class ProgramDescView : public ProgramDescAPI {
 
   proto::ProgramDesc const* raw_desc() const { return desc_; }
 
-  const Buffer& buf() const { return buf_; }
+  const model_parser::Buffer& buf() const { return buf_; }
 
  private:
   proto::ProgramDesc const* desc_;
-  Buffer buf_;
-  std::vector<BlockDescView> blocks_;
-
- private:
-  ProgramDescView& operator=(const ProgramDescView&) = delete;
-  ProgramDescView(const ProgramDescView&) = delete;
+  model_parser::Buffer buf_;
+  std::vector<std::unique_ptr<BlockDescView>> blocks_;
 };
 
 #ifdef LITE_WITH_FLATBUFFERS_DESC
@@ -92,7 +113,9 @@ class ProgramDesc : public ProgramDescAPI {
  public:
   ProgramDesc() = default;
 
-  explicit ProgramDesc(const Buffer& buf) {
+  ProgramDesc(const ProgramDesc&) = delete;
+
+  explicit ProgramDesc(const model_parser::Buffer& buf) {
     const auto* raw_buf = proto::GetProgramDesc(buf.data());
     raw_buf->UnPackTo(&desc_);
     SyncBlocks();
@@ -111,6 +134,19 @@ class ProgramDesc : public ProgramDescAPI {
   template <typename T>
   T* AddBlock();
 
+  /////////////////////////////////////////////////////////////////
+  // Name: OpVersionMap
+  // Description: a map that strores paddle ops version
+  // note: flatbuffer doesn't contain op_version_map, because
+  //       op_version_map is not useful in inference period.
+  /////////////////////////////////////////////////////////////////
+  bool HasOpVersionMap() const override { return false; }
+
+  template <typename T>
+  T* GetOpVersionMap();
+
+  void SetOpVersionMap(std::map<std::string, int32_t> op_version_map) {}
+
   bool HasVersion() const override { return desc_.version.get(); }
 
   int64_t Version() const override {
@@ -127,12 +163,14 @@ class ProgramDesc : public ProgramDescAPI {
     desc_.version->version = version_in;
   }
 
-  Buffer data() {
+  void CopyDataToBuffer(model_parser::Buffer* buffer) {
+    CHECK(buffer);
     SyncBuffer();
-    Buffer cache(buf_.size());
-    std::memcpy(cache.data(), buf_.data(), buf_.size());
-    return cache;
+    buffer->ResetLazy(buf_.size());
+    model_parser::memcpy(buffer->data(), buf_.data(), buf_.size());
   }
+
+  size_t GetBufferMinAlignment() { return fbb_.GetBufferMinAlignment(); }
 
  private:
   void SyncBlocks() {

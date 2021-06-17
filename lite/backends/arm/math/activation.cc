@@ -527,8 +527,11 @@ void act_tanh<float>(const float* din, float* dout, int size, int threads) {
     const float* ptr_in_thread = din + i * nums_per_thread;
     float* ptr_out_thread = dout + i * nums_per_thread;
     for (int k = 0; k < neon_loop_cnt_dim4; ++k) {
-      exp_plus_vec = exp_ps(vld1q_f32(ptr_in_thread));
-      exp_minus_vec = exp_ps(vnegq_f32(vld1q_f32(ptr_in_thread)));
+      float32x4_t data = vld1q_f32(ptr_in_thread);
+      data = vminq_f32(data, vdupq_n_f32(70.00008f));
+      data = vmaxq_f32(data, vdupq_n_f32(-70.00008f));
+      exp_plus_vec = exp_ps(data);
+      exp_minus_vec = exp_ps(vnegq_f32(data));
       exp_sum_vec = vaddq_f32(exp_plus_vec, exp_minus_vec);
       exp_diff_vec = vsubq_f32(exp_plus_vec, exp_minus_vec);
       recip = div_ps(exp_diff_vec, exp_sum_vec);
@@ -702,6 +705,17 @@ void act_rsqrt<float>(const float* din, float* dout, int size, int threads) {
 }
 
 template <>
+void act_sqrt<float>(const float* din, float* dout, int size, int threads) {
+  const float* ptr_in = din;
+  float* ptr_out = dout;
+  for (int i = 0; i < size; ++i) {
+    ptr_out[0] = sqrtf(ptr_in[0]);
+    ptr_in++;
+    ptr_out++;
+  }
+}
+
+template <>
 void act_square<float>(const float* din, float* dout, int size, int threads) {
   const float* ptr_in = din;
   float* ptr_out = dout;
@@ -720,11 +734,50 @@ void act_hard_swish<float>(const float* din,
                            float scale,
                            float offset,
                            int threads) {
+  int nums_per_thread = size / threads;
+  int remain = size - nums_per_thread * threads;
+  int neon_loop_cnt_dim4 = nums_per_thread >> 2;
+  int neon_loop_remain_dim4 = nums_per_thread - (neon_loop_cnt_dim4 << 2);
+
   const float* ptr_in = din;
   float* ptr_out = dout;
-  for (int i = 0; i < size; ++i) {
+  float scale_r = 1. / scale;
+  float32x4_t scale_v, offset_v, threshold_v, zero;
+  offset_v = vdupq_n_f32(offset);
+  scale_v = vdupq_n_f32(scale_r);
+  zero = vdupq_n_f32(0.);
+  threshold_v = vdupq_n_f32(threshold);
+
+#pragma omp parallel for
+  for (int i = 0; i < threads; i++) {
+    const float* ptr_in_thread = ptr_in + i * nums_per_thread;
+    float* ptr_out_thread = ptr_out + i * nums_per_thread;
+    for (int j = 0; j < neon_loop_cnt_dim4; j++) {
+      float32x4_t in = vld1q_f32(ptr_in_thread);
+      float32x4_t in_add_offset = vaddq_f32(in, offset_v);
+      float32x4_t tmp1 = vmaxq_f32(zero, in_add_offset);
+      float32x4_t tmp2 = vminq_f32(threshold_v, tmp1);
+      float32x4_t tmp3 = vmulq_f32(scale_v, in);
+      float32x4_t tmp4 = vmulq_f32(tmp2, tmp3);
+      vst1q_f32(ptr_out_thread, tmp4);
+      ptr_in_thread += 4;
+      ptr_out_thread += 4;
+    }
+
+    for (int j = 0; j < neon_loop_remain_dim4; j++) {
+      ptr_out_thread[0] =
+          std::min(std::max(0.f, ptr_in_thread[0] + offset), threshold) *
+          ptr_in_thread[0] * scale_r;
+      ptr_in_thread++;
+      ptr_out_thread++;
+    }
+  }
+
+  ptr_out = dout + threads * nums_per_thread;
+  ptr_in = din + threads * nums_per_thread;
+  for (int i = 0; i < remain; i++) {
     ptr_out[0] = std::min(std::max(0.f, ptr_in[0] + offset), threshold) *
-                 ptr_in[0] / scale;
+                 ptr_in[0] * scale_r;
     ptr_in++;
     ptr_out++;
   }
@@ -752,6 +805,42 @@ void act_abs<float>(const float* din, float* dout, int size, int threads) {
     dout++;
   }
 }
+
+template <typename T>
+void erf(const T* din, T* dout, int size, int threads) {
+  for (int i = 0; i < size; ++i) {
+    dout[0] = std::erf(din[0]);
+    din++;
+    dout++;
+  }
+}
+
+template void erf<float>(const float* din, float* dout, int size, int threads);
+
+template <typename T>
+void sign(const T* din, T* dout, int size, int threads) {
+  for (int i = 0; i < size; ++i) {
+    dout[0] = (dout[0] >= (T)0) - ((T)0 >= dout[0]);
+    din++;
+    dout++;
+  }
+}
+
+template void sign<float>(const float* din, float* dout, int size, int threads);
+
+template <typename T>
+void softplus(const T* din, T* dout, int size, int threads) {
+  for (int i = 0; i < size; ++i) {
+    dout[0] = log((T)1. + exp(din[i]));
+    din++;
+    dout++;
+  }
+}
+
+template void softplus<float>(const float* din,
+                              float* dout,
+                              int size,
+                              int threads);
 
 template <>
 void act_thresholded_relu<float>(
@@ -848,6 +937,35 @@ void act_elu<float>(
     ptr_out++;
   }
 }
+
+// when using approximation
+// $out = \\frac{1}{2}x(1+tanh(\\sqrt{\\frac{2}{\\pi}}(x+0.044715x^{3}))$
+// or else
+// $out = \\frac{1 + erf(\\frac{x}{\\sqrt{2}})}{2} x$
+template <>
+void act_gelu<float>(
+    const float* din, float* dout, int size, bool approximate, int threads) {
+  if (approximate) {
+    const float pi = std::atan(1) * 4;
+    const float sqrt_2_div_pi = std::sqrt(2 / pi);
+    for (int i = 0; i < size; i++) {
+      float x = *din;
+      *dout = 0.5 * x *
+              (1 + std::tanh(sqrt_2_div_pi * (x + 0.044715 * std::pow(x, 3))));
+      ++din;
+      ++dout;
+    }
+  } else {
+    const float sqrt_2 = std::sqrt(2.0);
+    for (int i = 0; i < size; i++) {
+      float x = *din;
+      *dout = 0.5 * x * (1 + std::erf(x / sqrt_2));
+      ++din;
+      ++dout;
+    }
+  }
+}
+
 }  // namespace math
 }  // namespace arm
 }  // namespace lite

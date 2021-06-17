@@ -14,7 +14,6 @@
 
 #include "lite/kernels/x86/activation_compute.h"
 
-// float
 REGISTER_LITE_KERNEL(square,
                      kX86,
                      kFloat,
@@ -25,7 +24,6 @@ REGISTER_LITE_KERNEL(square,
     .BindOutput("Out", {LiteType::GetTensorTy(TARGET(kX86))})
     .Finalize();
 
-// float
 REGISTER_LITE_KERNEL(relu,
                      kX86,
                      kFloat,
@@ -36,7 +34,6 @@ REGISTER_LITE_KERNEL(relu,
     .BindOutput("Out", {LiteType::GetTensorTy(TARGET(kX86))})
     .Finalize();
 
-// float
 REGISTER_LITE_KERNEL(leaky_relu,
                      kX86,
                      kFloat,
@@ -45,9 +42,9 @@ REGISTER_LITE_KERNEL(leaky_relu,
                      def)
     .BindInput("X", {LiteType::GetTensorTy(TARGET(kX86))})
     .BindOutput("Out", {LiteType::GetTensorTy(TARGET(kX86))})
+    .BindPaddleOpVersion("leaky_relu", 1)
     .Finalize();
 
-// float
 REGISTER_LITE_KERNEL(tanh,
                      kX86,
                      kFloat,
@@ -58,7 +55,6 @@ REGISTER_LITE_KERNEL(tanh,
     .BindOutput("Out", {LiteType::GetTensorTy(TARGET(kX86))})
     .Finalize();
 
-// float
 REGISTER_LITE_KERNEL(gelu,
                      kX86,
                      kFloat,
@@ -83,18 +79,37 @@ REGISTER_LITE_KERNEL(sigmoid,
                      kX86,
                      kFloat,
                      kNCHW,
-                     paddle::lite::kernels::x86::SoftsignCompute<float>,
+                     paddle::lite::kernels::x86::SigmoidCompute<float>,
                      def)
     .BindInput("X", {LiteType::GetTensorTy(TARGET(kX86))})
     .BindOutput("Out", {LiteType::GetTensorTy(TARGET(kX86))})
     .Finalize();
 
-// float
 REGISTER_LITE_KERNEL(relu6,
                      kX86,
                      kFloat,
                      kNCHW,
                      paddle::lite::kernels::x86::Relu6Compute<float>,
+                     def)
+    .BindInput("X", {LiteType::GetTensorTy(TARGET(kX86))})
+    .BindOutput("Out", {LiteType::GetTensorTy(TARGET(kX86))})
+    .Finalize();
+
+REGISTER_LITE_KERNEL(sqrt,
+                     kX86,
+                     kFloat,
+                     kNCHW,
+                     paddle::lite::kernels::x86::SqrtCompute<float>,
+                     def)
+    .BindInput("X", {LiteType::GetTensorTy(TARGET(kX86))})
+    .BindOutput("Out", {LiteType::GetTensorTy(TARGET(kX86))})
+    .Finalize();
+
+REGISTER_LITE_KERNEL(rsqrt,
+                     kX86,
+                     kFloat,
+                     kNCHW,
+                     paddle::lite::kernels::x86::RsqrtCompute<float>,
                      def)
     .BindInput("X", {LiteType::GetTensorTy(TARGET(kX86))})
     .BindOutput("Out", {LiteType::GetTensorTy(TARGET(kX86))})

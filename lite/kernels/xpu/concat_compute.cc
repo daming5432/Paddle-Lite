@@ -13,6 +13,7 @@
 // limitations under the License.
 
 #include "lite/kernels/xpu/concat_compute.h"
+#include <vector>
 #include "lite/backends/xpu/xpu_header_sitter.h"
 #include "lite/core/op_registry.h"
 
@@ -21,54 +22,43 @@ namespace lite {
 namespace kernels {
 namespace xpu {
 
-void ConcatCompute::Run() {
-  auto& param = this->Param<param_t>();
-  auto& ctx = this->ctx_->As<XPUContext>();
+template <typename InType>
+void ConcatCompute<InType>::Run() {
+  auto& param = this->template Param<param_t>();
+  auto& ctx = this->ctx_->template As<XPUContext>();
 
   auto ins = param.x;
   auto out = param.output;
-  int64_t axis = param.axis;
+  int64_t axis = param.axis < 0
+                     ? param.axis + static_cast<int>(ins[0]->dims().size())
+                     : param.axis;
 
-  int n = ins.size();
-  int h = 1;
-  int w_except_axis = 1;
-  CHECK(n <= 8) << "XPU only surpport at most 8 tensors for now";
-  for (int i = 0; i < axis; ++i) {
-    h *= (ins[0]->dims())[i];
-  }
-  for (int i = axis + 1; i < ins[0]->dims().size(); ++i) {
-    w_except_axis *= (ins[0]->dims())[i];
-  }
-  CHECK(axis >= 0) << "concat: axis shoud >= 0!";
-  CHECK(axis < ins[0]->dims().size()) << "concat: axis shoud < ins[0]->dims()!";
-  for (int i = 0; i < n; ++i) {
-    int hh = 1;
-    int ww = 1;
-    for (int j = 0; j < axis; ++j) {
-      hh *= (ins[i]->dims())[j];
+  std::vector<const float*> x_list;
+  std::vector<std::vector<int>> xdims_list;
+  for (int i = 0; i < ins.size(); i++) {
+    if (ins[i]->numel() > 0) {
+      xdims_list.push_back(std::vector<int>());
+      for (int j = 0; j < ins[i]->dims().size(); j++) {
+        xdims_list[i].push_back(ins[i]->dims()[j]);
+      }
+      if (sizeof(InType) == 8) {
+        xdims_list[i].back() = xdims_list[i].back() * 2;
+      }
+      x_list.push_back(
+          reinterpret_cast<const float*>(ins[i]->template data<InType>()));
     }
-    for (int j = axis + 1; j < ins[i]->dims().size(); ++j) {
-      ww *= (ins[i]->dims())[j];
-    }
-    CHECK(hh == h) << "concat: h should be eual!";
-    CHECK(ww == w_except_axis) << "concat: w should be eual except for axis!";
   }
+  if (x_list.size() > 0) {
+    int r = xdnn::concat<float>(
+        ctx.GetRawContext(),
+        x_list,
+        reinterpret_cast<float*>(
+            out->template mutable_data<InType>(TARGET(kXPU))),
+        xdims_list,
+        axis);
 
-  int in_w_host[n];      // NOLINT
-  const float* ptrs[n];  // NOLINT
-
-  for (int i = 0; i < n; ++i) {
-    ptrs[i] = ins[i]->data<float>();
-    in_w_host[i] = w_except_axis * (ins[i]->dims())[axis];
+    CHECK_EQ(r, 0);
   }
-
-  int r = xdnn::concat<float>(ctx.GetRawContext(), /* ctx */
-                              h,                   /* height */
-                              in_w_host,           /* width_x */
-                              n,                   /* n */
-                              ptrs,                /* lm_ptrs */
-                              out->mutable_data<float>(TARGET(kXPU)) /*y*/);
-  CHECK_EQ(r, 0);
 }
 
 }  // namespace xpu
@@ -76,10 +66,38 @@ void ConcatCompute::Run() {
 }  // namespace lite
 }  // namespace paddle
 
-REGISTER_LITE_KERNEL(
-    concat, kXPU, kFloat, kNCHW, paddle::lite::kernels::xpu::ConcatCompute, def)
-    .BindInput("X", {LiteType::GetTensorTy(TARGET(kXPU))})
+REGISTER_LITE_KERNEL(concat,
+                     kXPU,
+                     kFloat,
+                     kNCHW,
+                     paddle::lite::kernels::xpu::ConcatCompute<float>,
+                     def)
+    .BindInput("X", {LiteType::GetTensorTy(TARGET(kXPU), PRECISION(kFloat))})
     .BindInput("AxisTensor",
                {LiteType::GetTensorTy(TARGET(kXPU), PRECISION(kInt32))})
-    .BindOutput("Out", {LiteType::GetTensorTy(TARGET(kXPU))})
+    .BindOutput("Out", {LiteType::GetTensorTy(TARGET(kXPU), PRECISION(kFloat))})
+    .Finalize();
+
+REGISTER_LITE_KERNEL(concat,
+                     kXPU,
+                     kFloat,
+                     kNCHW,
+                     paddle::lite::kernels::xpu::ConcatCompute<int>,
+                     concat_i32)
+    .BindInput("X", {LiteType::GetTensorTy(TARGET(kXPU), PRECISION(kInt32))})
+    .BindInput("AxisTensor",
+               {LiteType::GetTensorTy(TARGET(kXPU), PRECISION(kInt32))})
+    .BindOutput("Out", {LiteType::GetTensorTy(TARGET(kXPU), PRECISION(kInt32))})
+    .Finalize();
+
+REGISTER_LITE_KERNEL(concat,
+                     kXPU,
+                     kFloat,
+                     kNCHW,
+                     paddle::lite::kernels::xpu::ConcatCompute<int64_t>,
+                     concat_i64)
+    .BindInput("X", {LiteType::GetTensorTy(TARGET(kXPU), PRECISION(kInt64))})
+    .BindInput("AxisTensor",
+               {LiteType::GetTensorTy(TARGET(kXPU), PRECISION(kInt32))})
+    .BindOutput("Out", {LiteType::GetTensorTy(TARGET(kXPU), PRECISION(kInt64))})
     .Finalize();

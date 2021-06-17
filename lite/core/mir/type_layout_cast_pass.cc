@@ -153,7 +153,7 @@ void TypeLayoutTransformPass::AddLayoutInst(
     if ((in_arg_ty->target() == TARGET(kOpenCL) ||
          out_arg_ty->target() == TARGET(kOpenCL)) &&  // judge OpenCL first
         (TargetCompatibleTo(*in_arg_ty, from) &&
-         PrecisionCompatibleTo(*in_arg_ty, from) &&
+         /* skip precision check: PrecisionCompatibleTo(*in_arg_ty, from) &&*/
          DeviceCompatibleTo(*in_arg_ty, from) &&
          out_arg_ty->layout() == to.layout())) {
       is_found = true;
@@ -253,6 +253,7 @@ REGISTER_MIR_PASS(type_layout_cast_pass,
                   paddle::lite::mir::TypeLayoutTransformPass)
     .BindTargets({TARGET(kAny)})
     .ExcludeTargets({TARGET(kMLU)})
+    .ExcludeTargets({TARGET(kMetal)})
     .BindKernel("layout_once")
     .BindKernel("layout");
 

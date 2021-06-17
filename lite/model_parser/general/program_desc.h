@@ -13,9 +13,13 @@
 // limitations under the License.
 
 #pragma once
+#include <map>
+#include <memory>
+#include <string>
 #include <vector>
 #include "lite/model_parser/base/apis.h"
 #include "lite/model_parser/general/block_desc.h"
+#include "lite/model_parser/general/op_version_map.h"
 
 namespace paddle {
 namespace lite {
@@ -30,12 +34,11 @@ class ProgramDesc : public ProgramDescAPI {
  public:
   ProgramDesc() = default;
 
-  void CopyFrom(const ProgramDesc& other) {
-    version_ = other.Version();
-    blocks_ = other.blocks();
-  }
+  void CopyFrom(const ProgramDesc& other);
 
-  const std::vector<BlockDesc>& blocks() const { return blocks_; }
+  const std::vector<std::unique_ptr<BlockDesc>>& blocks() const {
+    return blocks_;
+  }
 
   size_t BlocksSize() const override { return blocks_.size(); }
 
@@ -47,10 +50,23 @@ class ProgramDesc : public ProgramDescAPI {
   template <typename T>
   T const* GetBlock(int32_t idx) const;
 
-  std::vector<BlockDesc>& GetBlocks() { return blocks_; }
+  std::vector<std::unique_ptr<BlockDesc>>& GetBlocks() { return blocks_; }
 
   template <typename T>
   T* AddBlock();
+
+  /////////////////////////////////////////////////////////////////
+  // Name: OpVersionMap
+  // Description: a map that strores paddle ops version
+  /////////////////////////////////////////////////////////////////
+  bool HasOpVersionMap() const override {
+    return !(op_version_map_.GetOpVersionMap().empty());
+  }
+
+  template <typename T>
+  T* GetOpVersionMap();
+
+  void SetOpVersionMap(std::map<std::string, int32_t> op_version_map);
 
   // Just return default versoin
   // TODO(sangoly): refine this
@@ -62,7 +78,8 @@ class ProgramDesc : public ProgramDescAPI {
 
  private:
   int64_t version_;
-  std::vector<BlockDesc> blocks_;
+  OpVersionMap op_version_map_;
+  std::vector<std::unique_ptr<BlockDesc>> blocks_;
 };
 
 }  // namespace general

@@ -15,6 +15,10 @@
 #pragma once
 
 #include "lite/utils/any.h"
+
+#ifdef LITE_WITH_METAL
+#include "lite/backends/metal/context.h"
+#endif
 #ifdef LITE_WITH_CUDA
 #include "lite/backends/cuda/context.h"
 #endif
@@ -65,6 +69,8 @@ using MLUContext = Context<TargetType::kMLU>;
 using RKNPUContext = Context<TargetType::kRKNPU>;
 using HuaweiAscendNPUContext = Context<TargetType::kHuaweiAscendNPU>;
 using ImaginationNNAContext = Context<TargetType::kImaginationNNA>;
+using IntelFPGAContext = Context<TargetType::kIntelFPGA>;
+using MTLContext = Context<TargetType::kMetal>;
 
 template <>
 class Context<TargetType::kHost> {
@@ -186,6 +192,57 @@ class Context<TargetType::kRKNPU> {
 
   RKNPUContext& operator=(const RKNPUContext& ctx) {}
   std::string name() const { return "RKNPUContext"; }
+
+  static void SetSubgraphModelCacheDir(Scope* scope,
+                                       std::string subgraph_model_cache_dir) {
+    auto var = scope->Var("SUBGRAPH_MODEL_CACHE_DIR");
+    CHECK(var);
+    auto data = var->GetMutable<std::string>();
+    CHECK(data);
+    *data = subgraph_model_cache_dir;
+  }
+
+  static std::string SubgraphModelCacheDir(Scope* scope) {
+    auto var = scope->FindVar("SUBGRAPH_MODEL_CACHE_DIR");
+    if (!var) return "";
+    return var->Get<std::string>();
+  }
+
+  static void SetSubgraphModelCacheBuffers(
+      Scope* scope,
+      const std::map<std::string,
+                     std::pair<std::vector<char>, std::vector<char>>>&
+          subgraph_model_cache_buffers) {
+    for (auto& subgraph_model_cache_buffer : subgraph_model_cache_buffers) {
+      auto& key = subgraph_model_cache_buffer.first;
+      auto var = scope->Var("SUBGRAPH_MODEL_CACHE_BUFFERS_" + key);
+      CHECK(var);
+      auto data =
+          var->GetMutable<std::pair<std::vector<char>, std::vector<char>>>();
+      CHECK(data);
+      *data = subgraph_model_cache_buffer.second;
+    }
+  }
+
+  static bool SubgraphModelCacheBuffers(Scope* scope,
+                                        const std::string& key,
+                                        std::vector<char>* cfg,
+                                        std::vector<char>* bin) {
+    CHECK(cfg);
+    CHECK(bin);
+    cfg->clear();
+    bin->clear();
+    auto var = scope->FindVar("SUBGRAPH_MODEL_CACHE_BUFFERS_" + key);
+    if (!var) return false;
+    auto data =
+        var->GetMutable<std::pair<std::vector<char>, std::vector<char>>>();
+    *cfg = data->first;
+    *bin = data->second;
+    // Reset to reduce memory consumption
+    std::vector<char>().swap(data->first);
+    std::vector<char>().swap(data->second);
+    return true;
+  }
 };
 #endif
 
@@ -273,6 +330,21 @@ class Context<TargetType::kFPGA> {
   void CopySharedTo(FPGAContext* ctx) {}
 
   std::string name() const { return "FPGAContext"; }
+};
+#endif
+
+#ifdef LITE_WITH_INTEL_FPGA
+// TODO(xbeu): add needed implementation to context
+template <>
+class Context<TargetType::kIntelFPGA> {
+ public:
+  void InitOnce() {}
+
+  IntelFPGAContext& operator=(const IntelFPGAContext& ctx) {}
+
+  void CopySharedTo(IntelFPGAContext* ctx) {}
+
+  std::string name() const { return "IntelFPGAContext"; }
 };
 #endif
 
@@ -399,6 +471,25 @@ class Context<TargetType::kOpenCL> {
 };
 #endif
 
+#ifdef LITE_WITH_METAL
+template <>
+class Context<TargetType::kMetal> {
+ public:
+  void InitOnce() { context_ = std::make_shared<MetalContext>(); }
+
+  void CopySharedTo(MTLContext* ctx) {
+    if (ctx && context_) {
+      ctx->context_ = context_;
+    }
+  }
+
+  MetalContext* context() { return context_.get(); }
+
+ private:
+  std::shared_ptr<MetalContext> context_{nullptr};
+};
+#endif
+
 // Context for running a kernel.
 // Holds the necessary resource and information.
 class KernelContext {
@@ -490,10 +581,23 @@ class ContextScheduler {
             &ctx->As<OpenCLContext>());
         break;
 #endif
+#ifdef LITE_WITH_METAL
+      case TARGET(kMetal):
+        kernel_contexts_[TargetType::kMetal].As<MTLContext>().CopySharedTo(
+            &ctx->As<MTLContext>());
+        break;
+#endif
 #ifdef LITE_WITH_FPGA
       case TARGET(kFPGA):
         kernel_contexts_[TargetType::kFPGA].As<FPGAContext>().CopySharedTo(
             &ctx->As<FPGAContext>());
+        break;
+#endif
+#ifdef LITE_WITH_INTEL_FPGA
+      case TARGET(kIntelFPGA):
+        kernel_contexts_[TargetType::kIntelFPGA]
+            .As<IntelFPGAContext>()
+            .CopySharedTo(&ctx->As<IntelFPGAContext>());
         break;
 #endif
 #ifdef LITE_WITH_BM
@@ -548,8 +652,14 @@ class ContextScheduler {
 #ifdef LITE_WITH_OPENCL
     InitContext<TargetType::kOpenCL, OpenCLContext>();
 #endif
+#ifdef LITE_WITH_METAL
+    InitContext<TargetType::kMetal, MTLContext>();
+#endif
 #ifdef LITE_WITH_FPGA
     InitContext<TargetType::kFPGA, FPGAContext>();
+#endif
+#ifdef LITE_WITH_INTEL_FPGA
+    InitContext<TargetType::kIntelFPGA, IntelFPGAContext>();
 #endif
 #ifdef LITE_WITH_NPU
     InitContext<TargetType::kNPU, NPUContext>();

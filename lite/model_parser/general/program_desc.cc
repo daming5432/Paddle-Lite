@@ -18,22 +18,40 @@ namespace paddle {
 namespace lite {
 namespace general {
 
+void ProgramDesc::CopyFrom(const ProgramDesc& other) {
+  version_ = other.Version();
+  blocks_.clear();
+  for (const auto& block : other.blocks()) {
+    blocks_.emplace_back(new BlockDesc(*block));
+  }
+}
+
 template <>
 BlockDesc* ProgramDesc::GetBlock<BlockDesc>(int32_t idx) {
   CHECK_LT(idx, BlocksSize()) << "idx >= blocks.size()";
-  return &blocks_[idx];
+  return blocks_[idx].get();
 }
 
 template <>
 BlockDesc const* ProgramDesc::GetBlock<BlockDesc>(int32_t idx) const {
   CHECK_LT(idx, BlocksSize()) << "idx >= blocks.size()";
-  return &blocks_[idx];
+  return blocks_[idx].get();
 }
 
 template <>
 BlockDesc* ProgramDesc::AddBlock<BlockDesc>() {
-  blocks_.emplace_back();
-  return &blocks_.back();
+  blocks_.emplace_back(new BlockDesc);
+  return blocks_.back().get();
+}
+
+template <>
+OpVersionMap* ProgramDesc::GetOpVersionMap<OpVersionMap>() {
+  return &op_version_map_;
+}
+
+void ProgramDesc::SetOpVersionMap(
+    std::map<std::string, int32_t> op_version_map) {
+  op_version_map_.SetOpVersionMap(op_version_map);
 }
 
 }  // namespace general

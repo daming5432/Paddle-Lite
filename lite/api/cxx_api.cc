@@ -31,6 +31,43 @@ std::vector<std::string> GetAllOps() {
   return OpLiteFactory::Global().GetAllOps();
 }
 
+bool IsQuantizedMode(const std::shared_ptr<cpp::ProgramDesc> &program_desc) {
+  const std::vector<std::string> quant_dequant_op = {
+      "fake_quantize_abs_max",
+      "fake_quantize_range_abs_max",
+      "fake_quantize_moving_average_abs_max",
+      "fake_channel_wise_quantize_abs_max",
+      "fake_dequantize_max_abs",
+      "fake_channel_wise_dequantize_max_abs",
+      "fake_quantize_dequantize_abs_max",
+      "fake_quantize_dequantize_moving_average_abs_max",
+      "fake_channel_wise_quantize_dequantize_abs_max",
+  };
+  const std::vector<std::string> dynamic_quant_op = {"lstm", "gru"};
+  bool is_quantized_model = false;
+  for (size_t i = 0; i < program_desc->BlocksSize() && !is_quantized_model;
+       ++i) {
+    auto *block_desc = program_desc->GetBlock<cpp::BlockDesc>(i);
+    for (size_t j = 0; j < block_desc->OpsSize() && !is_quantized_model; ++j) {
+      auto *op_desc = block_desc->GetOp<cpp::OpDesc>(j);
+      std::string op_type = op_desc->Type();
+      if (std::find(quant_dequant_op.begin(),
+                    quant_dequant_op.end(),
+                    op_type) != quant_dequant_op.end()) {
+        is_quantized_model = true;
+      }
+      if (std::find(dynamic_quant_op.begin(),
+                    dynamic_quant_op.end(),
+                    op_type) != dynamic_quant_op.end()) {
+        if (op_desc->HasAttr("quantization_type")) {
+          is_quantized_model = true;
+        }
+      }
+    }
+  }
+  return is_quantized_model;
+}
+
 void Predictor::SaveModel(const std::string &dir,
                           lite_api::LiteModelType model_type,
                           bool record_info) {
@@ -104,11 +141,14 @@ void Predictor::SaveOpKernelInfo(const std::string &model_dir) {
     std::string op_path = op2pathmap[*op_info];
     fputs(op_path.c_str(), opf_source);
     fputc('\n', opf_source);
+    if (op_path == "calib_once_op.cc") {
+      fputs("calib_op.cc\n", opf_source);
+    }
   }
   std::fclose(opf_source);
   std::fclose(opf);
-  LOG(INFO) << "operators information of tailored model is stored into: "
-            << opf_path;
+  OPT_LOG << "operators information of tailored model is stored into: "
+          << opf_path;
 
   // write Kernel_type and Kernel_path into file
   for (auto kernel_info = kernels_info.begin();
@@ -119,20 +159,14 @@ void Predictor::SaveOpKernelInfo(const std::string &model_dir) {
     std::string kernel_path = kernel2pathmap[*kernel_info];
     fputs(kernel_path.c_str(), kpf_source);
     fputc('\n', kpf_source);
-    if (kernel_path == "conv_compute.cc") {
-      fputs(
-          "conv_depthwise.cc\nconv_direct.cc\nconv_gemmlike.cc\nconv_"
-          "winograd.cc\n",
-          kpf_source);
-    }
   }
   std::fclose(kpf_source);
   std::fclose(kpf);
-  LOG(INFO) << "kernels information of tailored model is stored into: "
-            << kpf_path;
+  OPT_LOG << "kernels information of tailored model is stored into: "
+          << kpf_path;
 }
 
-#ifndef LITE_WITH_FPGA
+#if !defined(LITE_WITH_FPGA) && !defined(LITE_WITH_METAL)
 lite::Tensor *Predictor::GetInput(size_t offset) {
   CHECK(input_names_.size() > offset)
       << "The network has " << input_names_.size() << " inputs"
@@ -160,6 +194,11 @@ std::vector<std::string> Predictor::GetInputNames() { return input_names_; }
 // get outputnames
 std::vector<std::string> Predictor::GetOutputNames() { return output_names_; }
 
+// get input tensor precision type
+const std::vector<PrecisionType> &Predictor::GetInputPrecisions() const {
+  return input_precisions_;
+}
+
 // get param names
 std::vector<std::string> Predictor::GetParamNames() {
   return exec_scope_->AttributeVarNames();
@@ -185,6 +224,7 @@ void Predictor::PrepareFeedFetch() {
 
   input_names_.resize(feeds.size());
   output_names_.resize(fetchs.size());
+  input_precisions_.resize(feeds.size());
   for (size_t i = 0; i < feeds.size(); i++) {
     input_names_[feeds[i]->GetAttr<int>("col")] =
         feeds[i]->Output("Out").front();
@@ -193,10 +233,12 @@ void Predictor::PrepareFeedFetch() {
     output_names_[fetchs[i]->GetAttr<int>("col")] =
         fetchs[i]->Input("X").front();
   }
+  for (size_t i = 0; i < feeds.size(); i++) {
+    input_precisions_[i] = GetInput(i)->precision();
+  }
 }
 
-#ifndef LITE_WITH_FPGA
-
+#if !defined(LITE_WITH_FPGA) && !defined(LITE_WITH_METAL)
 const lite::Tensor *Predictor::GetOutput(size_t offset) const {
   CHECK(output_names_.size() > offset)
       << "The network has " << output_names_.size() << " outputs"
@@ -217,7 +259,6 @@ std::vector<const lite::Tensor *> Predictor::GetOutputs() const {
   return outputs;
 }
 #else
-
 const lite::Tensor *Predictor::GetOutput(size_t offset) const {
   auto *_fetch_list = exec_scope_->FindVar("fetch");
   CHECK(_fetch_list) << "no fatch variable in exec_scope";
@@ -313,30 +354,7 @@ void Predictor::Build(const std::shared_ptr<cpp::ProgramDesc> &program_desc,
         Place(TARGET(kHost), valid_place.precision, valid_place.layout));
   }
 
-  // Analysis whether the modle is quantized.
-  // For quantized model, add place(arm, int8) to inner_places
-  const std::vector<std::string> quant_dequant_op = {
-      "fake_quantize_abs_max",
-      "fake_quantize_range_abs_max",
-      "fake_quantize_moving_average_abs_max",
-      "fake_quantize_dequantize_moving_average_abs_max",
-      "fake_dequantize_max_abs",
-      "fake_channel_wise_dequantize_max_abs"};
-  bool is_quantized_model = false;
-  for (size_t i = 0; i < program_desc_->BlocksSize() && !is_quantized_model;
-       ++i) {
-    auto *block_desc = program_desc_->GetBlock<cpp::BlockDesc>(i);
-    for (size_t j = 0; j < block_desc->OpsSize() && !is_quantized_model; ++j) {
-      auto *op_desc = block_desc->GetOp<cpp::OpDesc>(j);
-      std::string op_type = op_desc->Type();
-      if (std::find(quant_dequant_op.begin(),
-                    quant_dequant_op.end(),
-                    op_type) != quant_dequant_op.end()) {
-        is_quantized_model = true;
-      }
-    }
-  }
-  if (is_quantized_model) {
+  if (IsQuantizedMode(program_desc_)) {
     inner_places.insert(inner_places.begin(),
                         Place{TARGET(kARM), PRECISION(kInt8)});
   }
@@ -349,13 +367,18 @@ void Predictor::Build(const std::shared_ptr<cpp::ProgramDesc> &program_desc,
   factor.ConsiderPrecision();
   factor.ConsiderDataLayout();
 
-  optimizer_.Run(std::move(program), inner_places, factor, passes);
-  exec_scope_ = optimizer_.exec_scope();
+  exec_scope_ = program.exec_scope();
+
+  program_ =
+      RunDefaultOptimizer(std::move(program), inner_places, factor, passes);
+
   PrepareFeedFetch();
+  // Verify if the ops version of current runtime program is
+  // the same with that in models.
+  CheckPaddleOpVersions(program_desc);
 }
 
 void Predictor::GenRuntimeProgram() {
-  program_ = optimizer_.GenRuntimeProgram();
   CHECK_EQ(exec_scope_, program_->exec_scope());
   program_generated_ = true;
 }
@@ -388,16 +411,101 @@ lite::Tensor *Predictor::GetInputByName(const std::string &name) {
   }
 }
 
-// #ifdef LITE_WITH_TRAIN
-// void Predictor::FeedVars(const std::vector<framework::Tensor> &tensors) {
-//   auto var = scope_->FindVar("feed");
-//   auto &feed_list = *(var->GetMutable<std::vector<lite::Tensor>>());
-//   feed_list.resize(tensors.size());
+/////////////////////////////////////////////////////////////////////////
+// Name: CheckPaddleOpVersions
+// Author: DannyIsFunny (github)
+// Usage: Compare op versions between inputed fluid model and current
+//        kernels registry in opt tool.
+// Eg. inputed model: Mobilenet_v1, op `conv2d` with version 2.
+//     opt tool: op version of kernel `conv2d` should be no less than 2.
+/////////////////////////////////////////////////////////////////////////
+void Predictor::CheckPaddleOpVersions(
+    const std::shared_ptr<cpp::ProgramDesc> &program_desc) {
+  // step1. get all the kernels from current programdesc
+  auto block_size = program_desc->BlocksSize();
+  for (size_t block_idx = 0; block_idx < block_size; ++block_idx) {
+    const auto &insts = program_->instructions(block_idx);
+    for (auto &inst : insts) {
+      // 1.1 each kernel from inputed fluid model.
+      const auto &op = inst.op()->op_info();
+      std::string op_name = op->Type();
+      if (program_desc->HasOpVersionMap()) {
+        auto *kernel = inst.kernel();
+        // Step2. Compared op versions of inputed model and kernel registry.
+        // 2.1 Get op_version_map from inputed fluid model.
+        auto *model_op_version =
+            program_desc->GetOpVersionMap<general::OpVersionMap>();
+        // 2.1 Get op_version versions from kernel registry.
+        auto kernel_versions =
+            ParamTypeRegistry::Global()
+                .GetKernelVersion(kernel->key_with_alias(), kernel->place())
+                .OpVersions();
+        for (auto iter = kernel_versions.begin(); iter != kernel_versions.end();
+             iter++) {
+          int32_t model_op_version_index =
+              model_op_version->GetOpVersionByName(iter->first);
+          // Step3. Compared op version between inputed model and kernel
+          // registry.
+          if ((model_op_version_index > iter->second) &&
+              (model_op_version_index != -1)) {
+            LOG(INFO) << "Warning: incompatible paddle op version. Kernel ("
+                      << kernel->name() << ") requires that op_version("
+                      << iter->first << ")==" << iter->second
+                      << ". However, the op_version(" << iter->first
+                      << ") in this models is " << model_op_version_index
+                      << ". It's suggested to use PaddlePaddle and "
+                         "Paddle-Lite of the same op_version("
+                      << iter->first << ").";
+          }
+        }
+      }
+    }
+  }
+}
 
-//   for (size_t i = 0; i < tensors.size(); ++i)
-//     feed_list[i].ShareDataWith(tensors[i]);
-// }
-// #endif
+bool Predictor::TryShrinkMemory() {
+#ifdef LITE_WITH_ARM
+  // Clear ArmL3Cache
+  lite::DeviceInfo::Global().ClearArmL3Cache();
+#endif
+  const std::vector<std::string> &local_var_names =
+      program_->exec_scope()->LocalVarNames();
+  for (auto &var_name : local_var_names) {
+    Variable *var = program_->exec_scope()->FindLocalVar(var_name);
+    if (var->IsType<lite::Tensor>()) {
+      // Clear unpersistable tensors
+      auto *tensor = program_->exec_scope()->FindMutableTensor(var_name);
+      if (!tensor->persistable()) {
+        tensor->clear();
+      }
+    } else if (var->IsType<std::vector<Tensor>>()) {
+      // Clear unpersistable tensor vector
+      auto *tensor_array =
+          program_->exec_scope()->FindMutableTensorList(var_name);
+      for (auto &tensor : *tensor_array) {
+        if (!tensor.persistable()) {
+          tensor.clear();
+        }
+      }
+    } else {
+      continue;
+    }
+  }
+  return true;
+}
+
+void Predictor::CheckInputValid() {
+  for (size_t idx = 0; idx < input_precisions_.size(); ++idx) {
+    if (GetInput(idx)->precision() != input_precisions_[idx]) {
+      LOG(WARNING) << " Error input tensor precision type. Input index (" << idx
+                   << ") Tensor name (" << input_names_[idx]
+                   << ") Require Precision type ("
+                   << PrecisionToStr(input_precisions_[idx])
+                   << ") Input Precision type ("
+                   << PrecisionToStr(GetInput(idx)->precision()) << ").";
+    }
+  }
+}
 
 }  // namespace lite
 }  // namespace paddle

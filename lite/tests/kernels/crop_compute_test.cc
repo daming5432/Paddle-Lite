@@ -203,9 +203,13 @@ TEST(crop, precision) {
 #endif
 
   TestCrop<float>(place);
+#if defined(LITE_WITH_ARM)
   TestCrop<int>(place);
+#endif
+#ifndef LITE_WITH_ARM
   TestCropY<float>(place);
   TestCropOffsets<float>(place);
+#endif
 }
 
 }  // namespace lite
